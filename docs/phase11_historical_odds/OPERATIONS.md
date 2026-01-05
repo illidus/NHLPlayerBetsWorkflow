@@ -1,0 +1,40 @@
+# Phase 11 — Operational Guide
+**Status:** Working Draft  
+**Last updated:** 2026-01-05
+
+## 1. Running Odds Ingestion
+### 1.1 Manual Run
+```powershell
+# Ingest all vendors
+python pipelines/odds/run_odds_ingestion.py --all
+
+# Ingest specific vendor
+python pipelines/odds/run_odds_ingestion.py --vendor UNABATED
+```
+
+### 1.2 Integration with Production
+Set environment variable:
+```powershell
+$env:RUN_ODDS_INGESTION=1
+python pipelines/production/run_production_pipeline.py
+```
+
+## 2. Scheduling Recommendation
+- **Forward Capture:** Run every 4 hours during game days.
+- **Historical Backfill:** One-time execution per available historical snapshot.
+
+## 3. Failure Modes & Recovery
+- **Network Timeout:** All requests use 30s timeout + 3 retries.
+- **Parser Error:** Vendor-specific parsers are isolated. If one fails, the pipeline logs the error and continues with other vendors.
+- **DuckDB Lock:** The pipeline will fail if DuckDB is held by another process (e.g., DBeaver or another script).
+
+## 4. Safety & Hygiene (CRITICAL)
+- **NO COMMIT GUARD:**
+    - `outputs/odds/raw/**` must be in `.gitignore`.
+    - `data/db/*.duckdb` must be in `.gitignore`.
+- **Idempotency:** Re-running the same raw file will NOT create duplicate rows in `fact_prop_odds`.
+
+## 5. Reprocessing
+To reprocess raw payloads:
+1. TRUNCATE `fact_prop_odds`. (Caution: deletes all normalized data).
+2. Run `pipelines/odds/run_odds_ingestion.py --reprocess`.
