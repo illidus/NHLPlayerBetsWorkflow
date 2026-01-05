@@ -30,8 +30,9 @@ python pipelines/production/run_production_pipeline.py
 
 ## 4. Safety & Hygiene (CRITICAL)
 - **NO COMMIT GUARD:**
-    - `outputs/odds/raw/**` must be in `.gitignore`.
-    - `data/db/*.duckdb` must be in `.gitignore`.
+    - `outputs/odds/raw/**` must be in `.gitignore`. (VERIFIED: Added to .gitignore)
+    - `data/db/*.duckdb` must be in `.gitignore`. (VERIFIED: Already in .gitignore)
+- **Hashing:** Every raw file is accompanied by a `.sha256` sidecar file and stored in `raw_odds_payloads` table.
 - **Idempotency:** Re-running the same raw file will NOT create duplicate rows in `fact_prop_odds`.
 
 ## 5. Reprocessing

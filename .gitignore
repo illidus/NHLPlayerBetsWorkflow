@@ -5,6 +5,7 @@ duckdb_temp/
 *.duckdb
 
 # --- Large/Transient Outputs ---
+outputs/odds/raw/
 outputs/**/*.csv
 outputs/**/*.xlsx
 outputs/**/*.jsonl
