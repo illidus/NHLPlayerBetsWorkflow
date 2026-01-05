@@ -1,0 +1,30 @@
+# --- Data and Database (Hard Exclude) ---
+data/db/
+data/raw/
+duckdb_temp/
+*.duckdb
+
+# --- Large/Transient Outputs ---
+outputs/**/*.csv
+outputs/**/*.xlsx
+outputs/**/*.jsonl
+outputs/**/*.log
+outputs/**/*.joblib
+outputs/archived_bets/
+
+# --- Models and Calibrators ---
+data/models/
+*.joblib
+
+# --- Python Environment ---
+.pytest_cache/
+__pycache__/
+.ipynb_checkpoints/
+venv/
+.env
+
+# --- IDE/OS Specific ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

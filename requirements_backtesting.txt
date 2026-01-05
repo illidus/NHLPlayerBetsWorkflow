@@ -1,0 +1,6 @@
+pandas
+requests
+duckdb
+pyarrow
+scikit-learn
+joblib

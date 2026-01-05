@@ -1,0 +1,20 @@
+description = "Investigates the codebase and creates a strategic plan for Phase 8."
+prompt = """
+Your role is a Lead ML Engineer. Your task is to implement 'Phase 8: Model Enhancement' based on the Phase 7 results.
+
+1. **Step 1: Data Pipeline Updates**
+    - Read `30_pipelines/build_probability_snapshots.py` and `30_pipelines/build_goalie_game_situation.py`.
+    - Plan the integration of `opp_sa60` and `goalie_gsax60` into the snapshots.
+
+2. **Step 2: Logic Enhancement**
+    - Analyze `nhl_bets/probs/single_game_model.py`.
+    - Propose how to use `mult_opp_g` and `mult_goalie` to adjust the mu (expected value) for goals and assists.
+
+3. **Step 3: Execution**
+    - Provide a checklist of code changes required.
+    - Do not implement yet; wait for user confirmation.
+
+Inputs Provided:
+- Current project status: Phase 7 Backtest ROI improved to -4.13%.
+- Goal: Fix 'Assist' market leaks and 'October' volatility.
+"""
