@@ -4,7 +4,7 @@ import logging
 import os
 import sys
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Ensure we can import from project root
 # current_dir: .../src/nhl_bets/projections
@@ -183,6 +183,10 @@ def main():
     else:
         logger.info(f"Using provided date: {game_date}")
 
+    # Canonical Snapshot Timestamp (UTC)
+    generation_ts = datetime.now(timezone.utc).isoformat()
+    logger.info(f"Probability Snapshot Timestamp: {generation_ts}")
+
     df_base, df_context = load_data()
     
     # 1. Standardize Base Projections (Per Game)
@@ -288,7 +292,8 @@ def main():
             'mult_goalie': round(calcs['mult_goalie'], 3),
             'mult_itt': round(calcs['mult_itt'], 3),
             'mult_b2b': round(calcs['mult_b2b'], 3),
-            'notes': row.get('notes', '')
+            'notes': row.get('notes', ''),
+            'prob_snapshot_ts': generation_ts
         }
         results.append(res)
 

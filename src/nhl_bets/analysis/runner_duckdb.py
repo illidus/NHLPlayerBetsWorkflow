@@ -88,14 +88,30 @@ def main():
     df_probs = pd.read_csv(PROBS_PATH)
     
     # Determine Snapshot Timestamp (Freshness Baseline)
-    try:
-        mtime = os.path.getmtime(PROBS_PATH)
-        prob_snapshot_ts_dt = datetime.fromtimestamp(mtime, timezone.utc)
-        prob_snapshot_ts_str = prob_snapshot_ts_dt.isoformat()
-    except Exception as e:
-        logger.warning(f"Could not determine probs file mtime: {e}")
-        prob_snapshot_ts_dt = datetime.now(timezone.utc)
-        prob_snapshot_ts_str = prob_snapshot_ts_dt.isoformat()
+    if 'prob_snapshot_ts' in df_probs.columns and not df_probs['prob_snapshot_ts'].isnull().all():
+        prob_snapshot_ts_str = str(df_probs['prob_snapshot_ts'].iloc[0])
+        try:
+            prob_snapshot_ts_dt = pd.to_datetime(prob_snapshot_ts_str, utc=True).to_pydatetime()
+            logger.info(f"Using Canonical Snapshot TS from Data: {prob_snapshot_ts_str}")
+        except Exception as e:
+            logger.warning(f"Could not parse prob_snapshot_ts from data: {e}. Fallback to file mtime.")
+            try:
+                mtime = os.path.getmtime(PROBS_PATH)
+                prob_snapshot_ts_dt = datetime.fromtimestamp(mtime, timezone.utc)
+                prob_snapshot_ts_str = prob_snapshot_ts_dt.isoformat()
+            except:
+                prob_snapshot_ts_dt = datetime.now(timezone.utc)
+                prob_snapshot_ts_str = prob_snapshot_ts_dt.isoformat()
+    else:
+        logger.warning("prob_snapshot_ts column not found in probs file (or empty). Fallback to file mtime.")
+        try:
+            mtime = os.path.getmtime(PROBS_PATH)
+            prob_snapshot_ts_dt = datetime.fromtimestamp(mtime, timezone.utc)
+            prob_snapshot_ts_str = prob_snapshot_ts_dt.isoformat()
+        except Exception as e:
+            logger.warning(f"Could not determine probs file mtime: {e}")
+            prob_snapshot_ts_dt = datetime.now(timezone.utc)
+            prob_snapshot_ts_str = prob_snapshot_ts_dt.isoformat()
 
     logger.info(f"Loaded {len(df_probs)} model probabilities. Snapshot TS: {prob_snapshot_ts_str}")
     
@@ -223,6 +239,14 @@ def main():
             f.write(f"- **Excluded (Stale/Missing):** {len(df_excluded)}\n")
             f.write(f"- **Window:** {freshness_window} minutes\n")
             f.write(f"- **Snapshot TS:** {prob_snapshot_ts_str}\n\n")
+
+            if not df_fresh.empty:
+                min_cap = df_fresh['capture_ts_utc'].min()
+                max_cap = df_fresh['capture_ts_utc'].max()
+                min_fresh = df_fresh['freshness_minutes'].min()
+                max_fresh = df_fresh['freshness_minutes'].max()
+                f.write(f"- **Capture TS Range:** {min_cap} to {max_cap}\n")
+                f.write(f"- **Freshness (min) Range:** {min_fresh:.2f} to {max_fresh:.2f}\n\n")
             
             if not df_excluded.empty:
                 f.write("## Excluded Breakdown by Vendor/Book\n")
