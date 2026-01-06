@@ -45,3 +45,6 @@ To reprocess raw payloads:
 - 2026-01-05: `python pipelines/backtesting/ingest_odds_to_duckdb.py` (DB constraints/idempotency check) – completed successfully.
 - 2026-01-05: `python -` (update_player_mappings + update_event_mappings via inline script) – completed successfully.
 - 2026-01-05: `python src/nhl_bets/analysis/runner_duckdb.py` (EV report gate for mapping safety) – completed successfully.
+- 2026-01-05: `python -` (update_player_mappings + update_event_mappings via inline script, post-join fixes) – completed successfully.
+- 2026-01-05: `python src/nhl_bets/analysis/runner_duckdb.py` (EV report gate for join correctness) – completed successfully.
+- 2026-01-05: `python -m pytest tests/test_storage_hashing.py tests/test_runner_join.py` – completed successfully (2 passed).
