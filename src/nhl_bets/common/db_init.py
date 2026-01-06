@@ -110,7 +110,9 @@ def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
         vendor_player_id TEXT,
         vendor_player_name TEXT,
         source_vendor TEXT,
-        canonical_player_id BIGINT
+        canonical_player_id BIGINT,
+        CONSTRAINT dim_players_mapping_vendor_id_unique UNIQUE (source_vendor, vendor_player_id),
+        CONSTRAINT dim_players_mapping_vendor_name_unique UNIQUE (source_vendor, vendor_player_name)
     )
     """)
     
@@ -118,7 +120,30 @@ def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
     CREATE TABLE IF NOT EXISTS dim_events_mapping (
         vendor_event_id TEXT,
         source_vendor TEXT,
-        canonical_game_id TEXT
+        canonical_game_id TEXT,
+        CONSTRAINT dim_events_mapping_vendor_unique UNIQUE (source_vendor, vendor_event_id)
+    )
+    """)
+
+    con.execute("DROP INDEX IF EXISTS idx_dim_players_mapping_vendor_id")
+    con.execute("DROP INDEX IF EXISTS idx_dim_players_mapping_vendor_name")
+    con.execute("DROP INDEX IF EXISTS idx_dim_events_mapping_vendor")
+    con.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_dim_players_mapping_vendor_id ON dim_players_mapping (
+        source_vendor,
+        vendor_player_id
+    )
+    """)
+    con.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_dim_players_mapping_vendor_name ON dim_players_mapping (
+        source_vendor,
+        vendor_player_name
+    )
+    """)
+    con.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_dim_events_mapping_vendor ON dim_events_mapping (
+        source_vendor,
+        vendor_event_id
     )
     """)
     

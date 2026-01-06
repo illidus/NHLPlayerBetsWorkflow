@@ -118,16 +118,63 @@ def update_player_mappings(con: duckdb.DuckDBPyConnection):
     """
     logger.info("Updating player mappings...")
     
-    # 1. Exact Name Match
+    con.register("team_name_map", pd.DataFrame(list(TEAM_NAME_TO_ABBR.items()), columns=['name', 'abbr']))
+
+    # 1. Vendor ID match when available, using team + date window to disambiguate.
     con.execute("""
+    WITH raw_team_abbr AS (
+        SELECT
+            raw.*,
+            COALESCE(h.abbr, raw.home_team) AS home_abbr,
+            COALESCE(a.abbr, raw.away_team) AS away_abbr
+        FROM fact_prop_odds raw
+        LEFT JOIN team_name_map h ON TRIM(raw.home_team) = h.name
+        LEFT JOIN team_name_map a ON TRIM(raw.away_team) = a.name
+    )
+    INSERT INTO dim_players_mapping (vendor_player_id, vendor_player_name, source_vendor, canonical_player_id)
+    SELECT DISTINCT raw.player_id_vendor, raw.player_name_raw, raw.source_vendor, p.player_id
+    FROM raw_team_abbr raw
+    JOIN dim_games g ON 
+        (TRIM(raw.home_abbr) = g.home_team AND TRIM(raw.away_abbr) = g.away_team) OR
+        (TRIM(raw.home_abbr) = g.away_team AND TRIM(raw.away_abbr) = g.home_team)
+    JOIN dim_players p ON 
+        LOWER(raw.player_name_raw) = LOWER(p.player_name) AND
+        p.team IN (g.home_team, g.away_team)
+    LEFT JOIN dim_players_mapping m ON 
+        raw.player_id_vendor = m.vendor_player_id AND 
+        raw.source_vendor = m.source_vendor
+    WHERE raw.player_id_vendor IS NOT NULL
+      AND raw.home_abbr IS NOT NULL AND raw.away_abbr IS NOT NULL
+      AND ABS(DATEDIFF('day', CAST(raw.capture_ts_utc AS DATE), CAST(g.game_date AS DATE))) <= 1
+      AND m.vendor_player_id IS NULL
+    """)
+
+    # 2. Exact name match fallback with team + date window.
+    con.execute("""
+    WITH raw_team_abbr AS (
+        SELECT
+            raw.*,
+            COALESCE(h.abbr, raw.home_team) AS home_abbr,
+            COALESCE(a.abbr, raw.away_team) AS away_abbr
+        FROM fact_prop_odds raw
+        LEFT JOIN team_name_map h ON TRIM(raw.home_team) = h.name
+        LEFT JOIN team_name_map a ON TRIM(raw.away_team) = a.name
+    )
     INSERT INTO dim_players_mapping (vendor_player_name, source_vendor, canonical_player_id)
     SELECT DISTINCT raw.player_name_raw, raw.source_vendor, p.player_id
-    FROM fact_prop_odds raw
-    JOIN dim_players p ON LOWER(raw.player_name_raw) = LOWER(p.player_name)
+    FROM raw_team_abbr raw
+    JOIN dim_games g ON 
+        (TRIM(raw.home_abbr) = g.home_team AND TRIM(raw.away_abbr) = g.away_team) OR
+        (TRIM(raw.home_abbr) = g.away_team AND TRIM(raw.away_abbr) = g.home_team)
+    JOIN dim_players p ON 
+        LOWER(raw.player_name_raw) = LOWER(p.player_name) AND
+        p.team IN (g.home_team, g.away_team)
     LEFT JOIN dim_players_mapping m ON 
         raw.player_name_raw = m.vendor_player_name AND 
         raw.source_vendor = m.source_vendor
-    WHERE m.vendor_player_name IS NULL
+    WHERE raw.home_abbr IS NOT NULL AND raw.away_abbr IS NOT NULL
+      AND ABS(DATEDIFF('day', CAST(raw.capture_ts_utc AS DATE), CAST(g.game_date AS DATE))) <= 1
+      AND m.vendor_player_name IS NULL
     """)
     
     # 2. Add vendor_player_id if available
@@ -228,9 +275,14 @@ def get_mapped_odds(con: duckdb.DuckDBPyConnection):
     return con.execute("""
     SELECT 
         o.*,
-        pm.canonical_player_id,
+        COALESCE(pm_id.canonical_player_id, pm_name.canonical_player_id) AS canonical_player_id,
         em.canonical_game_id
     FROM fact_prop_odds o
-    LEFT JOIN dim_players_mapping pm ON o.player_name_raw = pm.vendor_player_name AND o.source_vendor = pm.source_vendor
+    LEFT JOIN dim_players_mapping pm_id ON 
+        o.player_id_vendor = pm_id.vendor_player_id AND 
+        o.source_vendor = pm_id.source_vendor
+    LEFT JOIN dim_players_mapping pm_name ON 
+        o.player_name_raw = pm_name.vendor_player_name AND 
+        o.source_vendor = pm_name.source_vendor
     LEFT JOIN dim_events_mapping em ON o.event_id_vendor = em.vendor_event_id AND o.source_vendor = em.source_vendor
     """).df()
