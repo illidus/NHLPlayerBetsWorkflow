@@ -114,10 +114,20 @@ def insert_odds_records(con: duckdb.DuckDBPyConnection, df):
     for col in ts_cols:
         if col in df.columns:
             try:
+                # Log before normalization
+                if not df[col].empty:
+                    first_val = df[col].iloc[0]
+                    logger.info(f"Col {col} raw sample: {first_val} (type: {type(first_val)})")
+
                 # 1. Force to UTC Aware (handles naive as UTC, aware as conversion)
                 # 2. Remove timezone info (localize to None) so DuckDB stores exact UTC values
                 if not df[col].isnull().all():
                      df[col] = pd.to_datetime(df[col], utc=True).dt.tz_localize(None)
+                     
+                # Log after normalization
+                if not df[col].empty:
+                    first_val_after = df[col].iloc[0]
+                    logger.info(f"Col {col} normalized sample: {first_val_after} (type: {type(first_val_after)})")
             except Exception as e:
                 logger.warning(f"Failed to normalize timestamp col {col}: {e}")
 
@@ -159,4 +169,5 @@ def get_db_connection(db_path: str = DEFAULT_DB_PATH) -> duckdb.DuckDBPyConnecti
     con.execute("SET memory_limit = '8GB';")
     con.execute("SET threads = 8;")
     con.execute("SET temp_directory = './duckdb_temp/';")
+    con.execute("SET TimeZone = 'UTC';")
     return con

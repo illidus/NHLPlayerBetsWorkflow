@@ -32,7 +32,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ingest_odds_pipeline")
 
-DB_PATH = 'data/db/nhl_backtest.duckdb'
+from nhl_bets.common.db_init import DEFAULT_DB_PATH
+
+DB_PATH = DEFAULT_DB_PATH
 STATUS_PATH_ENV = "INGEST_STATUS_PATH"
 FAIL_FAST_ENV = "FAIL_FAST"
 
@@ -189,6 +191,7 @@ def main():
         con.execute("SET memory_limit = '8GB';")
         con.execute("SET threads = 8;")
         con.execute("SET temp_directory = './duckdb_temp/';")
+        con.execute("SET TimeZone = 'UTC';")
         
         # Initialize schema
         initialize_phase11_tables(con)
