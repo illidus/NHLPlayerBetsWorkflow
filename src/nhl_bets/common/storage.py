@@ -32,7 +32,7 @@ def save_raw_payload(vendor: str, payload: Any, extension: str = "json", suffix:
     
     # Convert payload to string for hashing/saving
     if extension == "json":
-        content = json.dumps(payload, indent=2)
+        content = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     else:
         content = str(payload)
         

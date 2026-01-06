@@ -39,3 +39,6 @@ python pipelines/production/run_production_pipeline.py
 To reprocess raw payloads:
 1. TRUNCATE `fact_prop_odds`. (Caution: deletes all normalized data).
 2. Run `pipelines/odds/run_odds_ingestion.py --reprocess`.
+
+## 6. Phase 11 Remediation Runs
+- 2026-01-05: `python pipelines/backtesting/ingest_odds_to_duckdb.py` (hash stability check) – completed successfully.
