@@ -1,177 +1,151 @@
-
-import duckdb
-import pandas as pd
 import os
 import sys
-from datetime import datetime
+import logging
+import duckdb
+import pandas as pd
+from datetime import datetime, timezone
+from typing import List, Dict, Any
 
-# Add current dir to path
-sys.path.append(os.path.dirname(__file__))
-from normalize_odds_schema import get_teams_from_slug, resolve_game_date, normalize_market, infer_side
+# Ensure project root is in path
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+src_dir = os.path.join(project_root, "src")
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+from nhl_bets.scrapers.unabated_client import UnabatedClient
+from nhl_bets.scrapers.oddsshark_client import OddsSharkClient
+from nhl_bets.scrapers.playnow_api_client import PlayNowAPIClient
+from nhl_bets.scrapers.playnow_adapter import PlayNowAdapter
+from nhl_bets.common.db_init import initialize_phase11_tables, insert_odds_records
+from nhl_bets.common.storage import save_raw_payload
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("ingest_odds.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger("ingest_odds_pipeline")
 
 DB_PATH = 'data/db/nhl_backtest.duckdb'
-ODDS_FILE = 'data/raw/nhl_player_props_all.csv'
 
-def ingest_odds():
-    if not os.path.exists(ODDS_FILE):
-        print(f"Odds file not found: {ODDS_FILE}")
-        return
+def is_payload_ingested(con: duckdb.DuckDBPyConnection, payload_hash: str) -> bool:
+    res = con.execute("SELECT count(*) FROM raw_odds_payloads WHERE payload_hash = ?", [payload_hash]).fetchone()
+    return res[0] > 0
 
+def register_payload(con: duckdb.DuckDBPyConnection, vendor: str, capture_ts: datetime, rel_path: str, payload_hash: str):
+    con.execute("INSERT INTO raw_odds_payloads (payload_hash, source_vendor, capture_ts_utc, file_path) VALUES (?, ?, ?, ?)", 
+                [payload_hash, vendor, capture_ts, rel_path])
+
+def run_unabated_ingestion(con: duckdb.DuckDBPyConnection):
+    logger.info("Starting UNABATED ingestion...")
+    client = UnabatedClient()
+    try:
+        snapshot = client.fetch_snapshot()
+        rel_path, sha_hash, capture_ts = save_raw_payload("UNABATED", snapshot, "json")
+        
+        if is_payload_ingested(con, sha_hash):
+            logger.info(f"UNABATED: Snapshot with hash {sha_hash} already ingested. Skipping.")
+            return
+            
+        records = client.parse_snapshot(snapshot, rel_path, sha_hash, capture_ts)
+        if records:
+            df = pd.DataFrame(records)
+            insert_odds_records(con, df)
+            register_payload(con, "UNABATED", capture_ts, rel_path, sha_hash)
+            logger.info(f"UNABATED: Inserted {len(records)} records.")
+    except Exception as e:
+        logger.error(f"UNABATED ingestion failed: {e}", exc_info=True)
+
+def run_oddsshark_ingestion(con: duckdb.DuckDBPyConnection):
+    logger.info("Starting ODDSSHARK ingestion...")
+    client = OddsSharkClient()
+    try:
+        html = client.fetch_snapshot()
+        rel_path, sha_hash, capture_ts = save_raw_payload("ODDSSHARK", html, "html")
+        
+        if is_payload_ingested(con, sha_hash):
+            logger.info(f"ODDSSHARK: Snapshot with hash {sha_hash} already ingested. Skipping.")
+            return
+            
+        records = client.parse_snapshot(html, rel_path, sha_hash, capture_ts)
+        if records:
+            df = pd.DataFrame(records)
+            insert_odds_records(con, df)
+            register_payload(con, "ODDSSHARK", capture_ts, rel_path, sha_hash)
+            logger.info(f"ODDSSHARK: Inserted {len(records)} records.")
+    except Exception as e:
+        logger.error(f"ODDSSHARK ingestion failed: {e}", exc_info=True)
+
+def run_playnow_ingestion(con: duckdb.DuckDBPyConnection):
+    logger.info("Starting PLAYNOW ingestion...")
+    client = PlayNowAPIClient()
+    adapter = PlayNowAdapter()
+    try:
+        # Fetch event list
+        logger.info("Fetching PlayNow event list...")
+        url_list, data_list = client.fetch_event_list(event_sorts="MTCH,TNMT")
+        
+        # Save raw event list (we don't track this hash for props ingestion deduplication, 
+        # as the detailed props are what matters)
+        save_raw_payload("PLAYNOW", data_list, "json", suffix="event_list")
+        
+        events = data_list.get('data', {}).get('events', [])
+        event_ids = [e['id'] for e in events if e.get('marketCount', 0) > 5]
+        
+        if not event_ids:
+            logger.warning("PLAYNOW: No events with props found.")
+            return
+
+        # Fetch detailed props
+        logger.info(f"Fetching PlayNow details for {len(event_ids)} events...")
+        url_det, data_det = client.fetch_event_details(event_ids)
+        
+        # Save raw details
+        rel_path, sha_hash, capture_ts = save_raw_payload("PLAYNOW", data_det, "json", suffix="details")
+        
+        if is_payload_ingested(con, sha_hash):
+            logger.info(f"PLAYNOW: Snapshot with hash {sha_hash} already ingested. Skipping.")
+            return
+            
+        # Parse and insert
+        records = adapter.parse_event_details(data_det, rel_path, sha_hash, capture_ts)
+        if records:
+            df = pd.DataFrame(records)
+            insert_odds_records(con, df)
+            register_payload(con, "PLAYNOW", capture_ts, rel_path, sha_hash)
+            logger.info(f"PLAYNOW: Inserted {len(records)} records.")
+            
+    except Exception as e:
+        logger.error(f"PLAYNOW ingestion failed: {e}", exc_info=True)
+
+def main():
+    logger.info("Initializing Phase 11 Odds Ingestion Pipeline")
+    
     con = duckdb.connect(DB_PATH)
-    
-    # Create table if not exists
-    con.execute("DROP TABLE IF EXISTS fact_odds_props")
-    con.execute("""
-    CREATE TABLE IF NOT EXISTS fact_odds_props (
-        asof_ts TIMESTAMP,
-        game_date DATE,
-        book VARCHAR,
-        market VARCHAR,
-        line DOUBLE,
-        player_name VARCHAR,
-        player_id BIGINT,
-        team VARCHAR,
-        odds_decimal DOUBLE,
-        side VARCHAR,
-        source_file VARCHAR
-    )
-    """)
-    
-    print("Reading CSV...")
-    df = pd.read_csv(ODDS_FILE)
-    
-    # Resolve Dates Cache
-    slug_date_map = {}
-    
-    # Prepare rows
-    rows_to_insert = []
-    
-    print("Processing rows...")
-    # Group by game to minimize DB calls
-    for slug in df['Game'].unique():
-        away, home = get_teams_from_slug(slug)
-        if not away:
-            print(f"Could not parse slug: {slug}")
-            continue
-            
-        g_date = resolve_game_date(con, away, home)
-        if not g_date:
-            print(f"Could not resolve date for {slug} ({away}@{home})")
-            continue
-            
-        slug_date_map[slug] = g_date.date()
-        # print(f"Mapped {slug} -> {g_date.date()}")
-
-    # Iterate rows
-    # We need to track pairs for side inference
-    # Assume file is sorted by Game, Market
-    
-    current_market_key = None
-    row_counter = 0 # 0 for first, 1 for second
-    
-    count = 0
-    for idx, row in df.iterrows():
-        slug = row['Game']
-        market_str = row['Market']
-        if slug not in slug_date_map:
-            continue
-            
-        game_date = slug_date_map[slug]
+    try:
+        # Connect and set pragmas
+        con.execute("SET memory_limit = '8GB';")
+        con.execute("SET threads = 8;")
+        con.execute("SET temp_directory = './duckdb_temp/';")
         
-        # Parse Market
-        p_name, market_type, line, side_hint = normalize_market(market_str, row['Player'], row.get('Raw_Line'))
+        # Initialize schema
+        initialize_phase11_tables(con)
         
-        if not p_name or not market_type:
-            continue
-            
-        # Determine Side
-        # Check if new market context
-        market_key = (slug, market_str, p_name)
-        if market_key != current_market_key:
-            current_market_key = market_key
-            row_counter = 0
-        else:
-            row_counter += 1
-            
-        side = infer_side(row['Odds_1'], market_type, is_first_row=(row_counter == 0))
+        # Run vendors
+        run_unabated_ingestion(con)
+        run_playnow_ingestion(con)
+        run_oddsshark_ingestion(con)
         
-        # Extract Odds
-        try:
-            odds = float(row['Odds_1'])
-        except:
-            continue
-            
-        # Player ID mapping (simple lookup in DB later, or we insert name and map downstream)
-        # We'll insert name and map in the SQL View or Join.
+        logger.info("Odds ingestion pipeline completed.")
         
-        rows_to_insert.append((
-            datetime.now(), # asof_ts (simulated ingestion time, or file mod time)
-            game_date,
-            'Consensus', # Book
-            market_type,
-            line,
-            p_name,
-            None, # player_id (map later)
-            None, # team (unknown from CSV row, can infer from DB)
-            odds,
-            side,
-            ODDS_FILE
-        ))
-        count += 1
-        
-    print(f"Prepared {len(rows_to_insert)} odds rows.")
-    
-    # Bulk Insert
-    # We can create a DataFrame and use to_sql equivalent in duckdb appender
-    if rows_to_insert:
-        insert_df = pd.DataFrame(rows_to_insert, columns=[
-            'asof_ts', 'game_date', 'book', 'market', 'line', 
-            'player_name', 'player_id', 'team', 'odds_decimal', 'side', 'source_file'
-        ])
-        
-        # Map Player IDs using dim_players
-        # We fetch all players
-        players_df = con.execute("SELECT player_id, player_name, team FROM dim_players").df()
-        
-        # Normalize names for join
-        # Simple lowercase strip
-        insert_df['norm_name'] = insert_df['player_name'].str.lower().str.strip()
-        players_df['norm_name'] = players_df['player_name'].str.lower().str.strip()
-        
-        # Deduplicate players (take most recent team?)
-        # For now just drop dupes on name
-        players_dedup = players_df.drop_duplicates(subset=['norm_name'])
-        
-        merged = insert_df.merge(players_dedup[['norm_name', 'player_id', 'team']], on='norm_name', how='left')
-        
-        # Update original columns
-        merged['player_id'] = merged['player_id_y']
-        merged['team'] = merged['team_y'] # Use DB team
-        
-        # Select final cols
-        final_df = merged[[
-            'asof_ts', 'game_date', 'book', 'market', 'line', 
-            'player_name', 'player_id', 'team', 'odds_decimal', 'side', 'source_file'
-        ]]
-        
-        # Convert player_id to numeric (nullable)
-        final_df['player_id'] = pd.to_numeric(final_df['player_id'], errors='coerce').astype('Int64')
-
-        # Register and Insert
-        con.register('df_odds_staging', final_df)
-        con.execute("""
-        INSERT INTO fact_odds_props (
-            asof_ts, game_date, book, market, line, 
-            player_name, player_id, team, odds_decimal, side, source_file
-        )
-        SELECT 
-            asof_ts, game_date, book, market, line, 
-            player_name, player_id, team, odds_decimal, side, source_file
-        FROM df_odds_staging
-        """)
-        print("Inserted into DuckDB.")
-        
-    con.close()
+    except Exception as e:
+        logger.error(f"Pipeline failed: {e}", exc_info=True)
+    finally:
+        con.close()
 
 if __name__ == "__main__":
-    ingest_odds()
+    main()

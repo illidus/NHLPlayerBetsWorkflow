@@ -1,0 +1,32 @@
+You are a CLI implementation agent for NHLPlayerBetsWorkflow Phase 11.
+
+Branch: phase11/historical-odds-ingestion
+
+BINDING GOVERNANCE
+- Phase 10 canonical modeling logic is frozen: do NOT change probability math, distributions, mu formulas, rolling windows, MARKET_POLICY, calibration fitting logic, or accuracy-only gating metrics.
+- This phase is data ingestion + normalization + joinability + reporting plumbing only.
+- ROI is allowed only as an explicitly labeled exploratory (non-gating) report.
+
+AUTHORITATIVE SPECS (MUST FOLLOW)
+- docs/phase11_historical_odds/PHASE11_IMPLEMENTATION.md
+- docs/phase11_historical_odds/LONG_TODO_PHASE11.md
+- docs/phase11_historical_odds/VERIFICATION_CHECKLIST.md
+- docs/phase11_historical_odds/PROCEDURE_LONG_RUN.md
+
+VENDORS (REQUIRED)
+- PLAYNOW + UNABATED + ODDSSHARK
+
+YOUR JOB
+1) Read GEMINI.md and the Phase 11 docs above.
+2) Write a concrete plan in docs/phase11_historical_odds/ARCHITECTURE.md BEFORE coding.
+3) Implement Section-by-section from LONG_TODO_PHASE11.md.
+4) After each section, run the matching verification checks and record results in docs/phase11_historical_odds/OPERATIONS.md.
+5) Commit after each completed section with a clear message.
+
+STOP WHEN
+- Unabated snapshot ingestion works end-to-end (raw + normalized + dedup).
+- PlayNow ingestion works end-to-end (raw + normalized + dedup).
+- OddsShark ingestion works end-to-end OR is safely disabled with documented reason.
+- EV report includes multi-vendor/book odds WITHOUT changing EV formulas.
+- Join coverage report exists.
+- Phase 10 golden validations still PASS.

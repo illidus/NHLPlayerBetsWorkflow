@@ -9,8 +9,12 @@ current state, non-negotiable constraints, and how to execute common tasks.
 - **Repo root:** `C:\Users\Ryisa\Documents\Scripts\NHLPlayerBetsWorkflow`
 - **DuckDB Path:** `data/db/nhl_backtest.duckdb`
 - **Core Orchestrator:** `pipelines/production/run_production_pipeline.py`
-- **Current Phase:** Phase 10 (Production Stability) — *Active*
-- **Scraper:** Direct API Client (`src/nhl_bets/scrapers/scrape_playnow_api.py`)
+- **Current Phase:** Phase 11 (Historical Odds & Multi-Book EV) — *Active*
+- **Scrapers:** 
+    - Unabated API (`src/nhl_bets/scrapers/unabated_client.py`)
+    - OddsShark HTML (`src/nhl_bets/scrapers/oddsshark_client.py`)
+    - PlayNow API (`src/nhl_bets/scrapers/scrape_playnow_api.py`)
+- **Unified Odds Table:** `fact_prop_odds` (DuckDB)
 
 ---
 
@@ -74,9 +78,14 @@ The standard run (`python pipelines/production/run_production_pipeline.py`) exec
 1. **Sync**: MoneyPuck data → DuckDB foundation.
 2. **Features**: Rebuild player/goalie/team features.
 3. **Export Base**: Generate `BaseSingleGameProjections.csv` from DuckDB features.
-4. **Scrape**: API-based capture of live events and markets (`src/nhl_bets/scrapers/scrape_playnow_api.py`).
+4. **Scrape**: Unified capture of live events and markets from Unabated, OddsShark, and PlayNow.
+    - Script: `python pipelines/backtesting/ingest_odds_to_duckdb.py`
+    - Logic: Normalizes to `fact_prop_odds`, saves verbatim raw snapshots.
 5. **Project**: Generate adjusted Mu and probabilities (Raw + Calibrated) via `src/nhl_bets/projections/single_game_probs.py`.
-6. **Analyze**: EV computation using `MARKET_POLICY` with console reporting and audit generation.
+6. **Map**: Best-effort player and event mapping.
+    - Logic: `src/nhl_bets/analysis/normalize.py`
+7. **Analyze**: EV computation using `MARKET_POLICY` with multi-book support.
+    - Unified Runner: `python src/nhl_bets/analysis/runner_duckdb.py`
 7. **Audit**: Generate `ev_prob_audit_YYYY-MM-DD.*` reports with full math trace.
     - Fields: `ProbSource` (Calibrated/Raw), `source_prob_column`.
 8. **Accuracy (Optional)**: If `RUN_ACCURACY_BACKTEST=1`, evaluate forecast quality.
@@ -144,3 +153,21 @@ All model logic experiments must be documented in a dedicated markdown file with
 1. **GOALS Integrity:** GOALS EV% can be positive but must be verified if it deviates significantly from implied odds (no unexplained extreme outliers).
 2. **High EV Validation:** Any ASSISTS/POINTS EV > 10% → Verify sample size and confirm it aligns with a known calibrator bucket.
 3. **Row Duplication:** If duplicate `market_key` rows exist, first check for Over/Under symmetry before investigating join defects.
+
+
+## Phase 11 — Historical Odds Ingestion (In Progress)
+**Spec:** docs/phase11_historical_odds/PHASE11_IMPLEMENTATION.md
+
+### Scope
+- Add odds ingestion for: PLAYNOW (primary current book), UNABATED (primary multi-book), ODDSSHARK (supplemental).
+- Store immutable raw snapshots (git-ignored) and normalize into append-only DuckDB tables with deterministic dedup.
+- Integrate via opt-in flag RUN_ODDS_INGESTION=1 so Phase 10 production runs remain unchanged by default.
+- PlayNow ingestion reuses the existing API-first scraper and normalized markets foundation; Phase 11 only normalizes into the unified odds table.
+
+### Evaluation
+- Backtesting acceptance gates remain accuracy-only (Log Loss, Brier, ECE, ROC AUC, Top-K).
+- Exploratory ROI may be produced as a labeled non-gating report when sample size is small. 
+- Exploratory ROI outputs MUST NOT be used to tune thresholds, calibrators, or feature logic.
+
+### Artifacts (Git Hygiene)
+- MUST NEVER COMMIT: outputs/odds/raw/**, any DuckDB files, cookies/tokens/secrets.
