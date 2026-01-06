@@ -117,6 +117,7 @@ class PlayNowAdapter:
                         "source_vendor": "PLAYNOW",
                         "capture_ts_utc": capture_ts,
                         "event_id_vendor": event_id,
+                        "event_id_vendor_raw": event_id,
                         "event_name_raw": event_name,
                         "event_start_ts_utc": start_time,
                         "home_team": home_team,

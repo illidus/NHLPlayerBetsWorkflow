@@ -15,6 +15,7 @@ def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
         source_vendor TEXT,
         capture_ts_utc TIMESTAMP,
         event_id_vendor TEXT,
+        event_id_vendor_raw TEXT,
         event_name_raw TEXT,
         event_start_ts_utc TIMESTAMP,
         home_team TEXT,
@@ -33,6 +34,9 @@ def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
         raw_payload_hash TEXT
     )
     """)
+
+    # Ensure columns exist for older tables
+    con.execute("ALTER TABLE fact_prop_odds ADD COLUMN IF NOT EXISTS event_id_vendor_raw TEXT")
     
     # 2. raw_odds_payloads (Ingestion registry)
     con.execute("""

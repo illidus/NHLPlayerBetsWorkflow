@@ -1,7 +1,7 @@
 import requests
 import logging
 from bs4 import BeautifulSoup
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from typing import List, Dict, Any, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from nhl_bets.common.storage import save_raw_payload
@@ -11,6 +11,27 @@ from nhl_bets.common.vendor_utils import (
     get_timeout_tuple,
     should_force_vendor_failure,
 )
+from nhl_bets.analysis.normalize import TEAM_NAME_TO_ABBR
+
+
+def _normalize_team_abbr(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if len(cleaned) == 3 and cleaned.isalpha():
+        return cleaned.upper()
+    mapped = TEAM_NAME_TO_ABBR.get(cleaned)
+    if mapped:
+        return mapped
+    return cleaned.upper() if cleaned.isalpha() and len(cleaned) <= 4 else None
+
+
+def build_synthetic_event_id(game_date: date, away_team: Optional[str], home_team: Optional[str]) -> Optional[str]:
+    away = _normalize_team_abbr(away_team)
+    home = _normalize_team_abbr(home_team)
+    if not game_date or not away or not home:
+        return None
+    return f"ODDSSHARK_{game_date:%Y%m%d}_{away}_{home}"
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +109,7 @@ class OddsSharkClient:
             # Game info looks like: <div class="props-game-info"> <span class="props-teams">ANA @ WSH -</span> ...
             
             for row in rows:
-                event_id = row.get('data-event', 'unknown')
+                event_id_raw = row.get('data-event', 'unknown')
                 
                 # Find the game info by looking at the previous sibling that is not a row
                 game_info = row.find_previous(class_="props-game-info")
@@ -101,6 +122,9 @@ class OddsSharkClient:
                         event_name = teams_el.get_text(strip=True).replace(" -", "")
                         if " @ " in event_name:
                             away_team, home_team = event_name.split(" @ ")
+
+                event_date = capture_ts.date()
+                event_id = build_synthetic_event_id(event_date, away_team, home_team) or event_id_raw
                 
                 player_name_el = row.select_one(".player-name")
                 if not player_name_el:
@@ -159,6 +183,7 @@ class OddsSharkClient:
                                 "source_vendor": "ODDSSHARK",
                                 "capture_ts_utc": capture_ts,
                                 "event_id_vendor": event_id,
+                                "event_id_vendor_raw": event_id_raw,
                                 "event_name_raw": event_name,
                                 "event_start_ts_utc": None, # HTML doesn't easily give UTC timestamp per row
                                 "home_team": home_team,

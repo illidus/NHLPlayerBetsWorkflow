@@ -118,6 +118,7 @@ class UnabatedClient:
                         "source_vendor": "UNABATED",
                         "capture_ts_utc": capture_ts,
                         "event_id_vendor": event_id,
+                        "event_id_vendor_raw": event_id,
                         "event_name_raw": event_name,
                         "event_start_ts_utc": event_start,
                         "home_team": home_team,
