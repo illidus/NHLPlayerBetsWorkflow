@@ -42,3 +42,4 @@ To reprocess raw payloads:
 
 ## 6. Phase 11 Remediation Runs
 - 2026-01-05: `python pipelines/backtesting/ingest_odds_to_duckdb.py` (hash stability check) – completed successfully.
+- 2026-01-05: `python pipelines/backtesting/ingest_odds_to_duckdb.py` (DB constraints/idempotency check) – completed successfully.

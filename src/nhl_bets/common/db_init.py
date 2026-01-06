@@ -12,25 +12,37 @@ def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
     # 1. fact_prop_odds (Main unified odds table)
     con.execute("""
     CREATE TABLE IF NOT EXISTS fact_prop_odds (
-        source_vendor TEXT,
-        capture_ts_utc TIMESTAMP,
-        event_id_vendor TEXT,
+        source_vendor TEXT NOT NULL,
+        capture_ts_utc TIMESTAMP NOT NULL,
+        event_id_vendor TEXT NOT NULL,
         event_name_raw TEXT,
         event_start_ts_utc TIMESTAMP,
         home_team TEXT,
         away_team TEXT,
         player_id_vendor TEXT,
         player_name_raw TEXT,
-        market_type TEXT,
-        line DOUBLE,
-        side TEXT,
-        book_id_vendor TEXT,
+        market_type TEXT NOT NULL,
+        line DOUBLE NOT NULL,
+        side TEXT NOT NULL,
+        book_id_vendor TEXT NOT NULL,
         book_name_raw TEXT,
         odds_american INTEGER,
         odds_decimal DOUBLE,
         is_live BOOLEAN DEFAULT FALSE,
         raw_payload_path TEXT,
-        raw_payload_hash TEXT
+        raw_payload_hash TEXT NOT NULL,
+        CONSTRAINT fact_prop_odds_unique UNIQUE (
+            source_vendor,
+            capture_ts_utc,
+            event_id_vendor,
+            player_id_vendor,
+            player_name_raw,
+            market_type,
+            line,
+            side,
+            book_id_vendor,
+            raw_payload_hash
+        )
     )
     """)
     
@@ -38,10 +50,38 @@ def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
     con.execute("""
     CREATE TABLE IF NOT EXISTS raw_odds_payloads (
         payload_hash TEXT PRIMARY KEY,
-        source_vendor TEXT,
-        capture_ts_utc TIMESTAMP,
-        file_path TEXT,
+        source_vendor TEXT NOT NULL,
+        capture_ts_utc TIMESTAMP NOT NULL,
+        file_path TEXT NOT NULL,
         ingested_at_utc TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # Enforce constraints for existing tables (when IF NOT EXISTS skips DDL).
+    con.execute("DROP INDEX IF EXISTS idx_fact_prop_odds_dedup")
+    con.execute("ALTER TABLE fact_prop_odds ALTER COLUMN source_vendor SET NOT NULL")
+    con.execute("ALTER TABLE fact_prop_odds ALTER COLUMN capture_ts_utc SET NOT NULL")
+    con.execute("ALTER TABLE fact_prop_odds ALTER COLUMN event_id_vendor SET NOT NULL")
+    con.execute("ALTER TABLE fact_prop_odds ALTER COLUMN market_type SET NOT NULL")
+    con.execute("ALTER TABLE fact_prop_odds ALTER COLUMN line SET NOT NULL")
+    con.execute("ALTER TABLE fact_prop_odds ALTER COLUMN side SET NOT NULL")
+    con.execute("ALTER TABLE fact_prop_odds ALTER COLUMN book_id_vendor SET NOT NULL")
+    con.execute("ALTER TABLE fact_prop_odds ALTER COLUMN raw_payload_hash SET NOT NULL")
+    con.execute("ALTER TABLE raw_odds_payloads ALTER COLUMN source_vendor SET NOT NULL")
+    con.execute("ALTER TABLE raw_odds_payloads ALTER COLUMN capture_ts_utc SET NOT NULL")
+    con.execute("ALTER TABLE raw_odds_payloads ALTER COLUMN file_path SET NOT NULL")
+    con.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_prop_odds_dedup ON fact_prop_odds (
+        source_vendor,
+        capture_ts_utc,
+        event_id_vendor,
+        player_id_vendor,
+        player_name_raw,
+        market_type,
+        line,
+        side,
+        book_id_vendor,
+        raw_payload_hash
     )
     """)
     
@@ -109,7 +149,8 @@ def insert_odds_records(con: duckdb.DuckDBPyConnection, df):
         n.market_type = e.market_type AND
         n.line = e.line AND
         n.side = e.side AND
-        n.book_id_vendor = e.book_id_vendor
+        n.book_id_vendor = e.book_id_vendor AND
+        n.raw_payload_hash = e.raw_payload_hash
     WHERE e.source_vendor IS NULL
     """)
     
