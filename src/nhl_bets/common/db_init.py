@@ -1,7 +1,11 @@
 import duckdb
 import logging
+import os
+import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_DB_PATH = os.path.join("data", "db", "nhl_backtest.duckdb")
 
 def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
     """
@@ -104,6 +108,19 @@ def insert_odds_records(con: duckdb.DuckDBPyConnection, df):
     if df is None or len(df) == 0:
         return
     
+    # Ensure UTC timestamp columns are naive UTC (stripping tzinfo) to avoid DuckDB auto-converting to Local
+    # We want the DB to store the UTC wall clock time in the TIMESTAMP column.
+    ts_cols = ['capture_ts_utc', 'event_start_ts_utc']
+    for col in ts_cols:
+        if col in df.columns:
+            try:
+                # 1. Force to UTC Aware (handles naive as UTC, aware as conversion)
+                # 2. Remove timezone info (localize to None) so DuckDB stores exact UTC values
+                if not df[col].isnull().all():
+                     df[col] = pd.to_datetime(df[col], utc=True).dt.tz_localize(None)
+            except Exception as e:
+                logger.warning(f"Failed to normalize timestamp col {col}: {e}")
+
     # Align DataFrame to table schema
     table_cols = [row[1] for row in con.execute("PRAGMA table_info('fact_prop_odds')").fetchall()]
     for col in table_cols:
@@ -134,7 +151,7 @@ def insert_odds_records(con: duckdb.DuckDBPyConnection, df):
     
     con.unregister("stg_new_odds")
 
-def get_db_connection(db_path: str) -> duckdb.DuckDBPyConnection:
+def get_db_connection(db_path: str = DEFAULT_DB_PATH) -> duckdb.DuckDBPyConnection:
     """
     Returns a DuckDB connection with standard pragmas.
     """
