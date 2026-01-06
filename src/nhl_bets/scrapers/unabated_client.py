@@ -2,8 +2,14 @@ import requests
 import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from nhl_bets.common.storage import save_raw_payload
+from nhl_bets.common.vendor_utils import (
+    MAX_RETRIES,
+    VendorRequestError,
+    get_timeout_tuple,
+    should_force_vendor_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +29,23 @@ class UnabatedClient:
     def __init__(self, timeout: int = 30):
         self.timeout = timeout
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    @retry(
+        stop=stop_after_attempt(MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
+        retry=retry_if_exception_type((VendorRequestError, requests.RequestException)),
+    )
     def fetch_snapshot(self) -> Dict[str, Any]:
         """Fetches the latest prop odds snapshot from Unabated."""
         logger.info(f"Fetching Unabated snapshot from {self.URL}...")
-        response = requests.get(self.URL, timeout=(10, self.timeout))
-        response.raise_for_status()
-        return response.json()
+        if should_force_vendor_failure("UNABATED"):
+            raise VendorRequestError("Forced Unabated failure via env var.")
+        try:
+            response = requests.get(self.URL, timeout=get_timeout_tuple(self.timeout))
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
+            raise VendorRequestError(f"Unabated request failed: {exc}") from exc
 
     def parse_snapshot(self, data: Dict[str, Any], raw_path: str, raw_hash: str, capture_ts: datetime) -> List[Dict[str, Any]]:
         """Parses the Unabated JSON into normalized records."""

@@ -3,8 +3,14 @@ import logging
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from nhl_bets.common.storage import save_raw_payload
+from nhl_bets.common.vendor_utils import (
+    MAX_RETRIES,
+    VendorRequestError,
+    get_timeout_tuple,
+    should_force_vendor_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -14,16 +20,26 @@ class OddsSharkClient:
     def __init__(self, timeout: int = 30):
         self.timeout = timeout
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    @retry(
+        stop=stop_after_attempt(MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
+        retry=retry_if_exception_type((VendorRequestError, requests.RequestException)),
+    )
     def fetch_snapshot(self) -> str:
         """Fetches the latest prop odds HTML from OddsShark."""
         logger.info(f"Fetching OddsShark HTML from {self.URL}...")
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
-        response = requests.get(self.URL, headers=headers, timeout=(10, self.timeout))
-        response.raise_for_status()
-        return response.text
+        if should_force_vendor_failure("ODDSSHARK"):
+            raise VendorRequestError("Forced OddsShark failure via env var.")
+        try:
+            response = requests.get(self.URL, headers=headers, timeout=get_timeout_tuple(self.timeout))
+            response.raise_for_status()
+            return response.text
+        except requests.RequestException as exc:
+            raise VendorRequestError(f"OddsShark request failed: {exc}") from exc
 
     def parse_snapshot(self, html: str, raw_path: str, raw_hash: str, capture_ts: datetime) -> List[Dict[str, Any]]:
         """Parses the OddsShark HTML into normalized records."""

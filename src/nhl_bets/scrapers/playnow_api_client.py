@@ -1,7 +1,13 @@
 import requests
 import os
 import logging
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from nhl_bets.common.vendor_utils import (
+    MAX_RETRIES,
+    VendorRequestError,
+    get_timeout_tuple,
+    should_force_vendor_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +30,12 @@ class PlayNowAPIClient:
         else:
             logger.info("No PlayNow cookie provided; proceeding without it.")
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    @retry(
+        stop=stop_after_attempt(MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
+        retry=retry_if_exception_type((VendorRequestError, requests.RequestException)),
+    )
     def fetch_event_list(self, drilldown_tag_ids="220", include_child_markets=True, event_sorts="MTCH,TNMT"):
         """
         Fetches the list of events for a given competition (NHL is 220).
@@ -39,11 +50,21 @@ class PlayNowAPIClient:
         }
         url = f"{self.BASE_URL}/event-list"
         logger.info(f"Fetching event list from {url} with params {params}")
-        response = self.session.get(url, headers=self.headers, params=params, timeout=15)
-        response.raise_for_status()
-        return response.url, response.json()
+        if should_force_vendor_failure("PLAYNOW"):
+            raise VendorRequestError("Forced PlayNow failure via env var.")
+        try:
+            response = self.session.get(url, headers=self.headers, params=params, timeout=get_timeout_tuple(20))
+            response.raise_for_status()
+            return response.url, response.json()
+        except requests.RequestException as exc:
+            raise VendorRequestError(f"PlayNow event list failed: {exc}") from exc
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    @retry(
+        stop=stop_after_attempt(MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
+        retry=retry_if_exception_type((VendorRequestError, requests.RequestException)),
+    )
     def fetch_event_details(self, event_ids, include_child_markets=True):
         """
         Fetches detailed info for specific event IDs.
@@ -60,6 +81,11 @@ class PlayNowAPIClient:
         }
         url = f"{self.BASE_URL}/events-by-ids"
         logger.info(f"Fetching event details from {url} (eventIds: {event_ids})")
-        response = self.session.get(url, headers=self.headers, params=params, timeout=15)
-        response.raise_for_status()
-        return response.url, response.json()
+        if should_force_vendor_failure("PLAYNOW"):
+            raise VendorRequestError("Forced PlayNow failure via env var.")
+        try:
+            response = self.session.get(url, headers=self.headers, params=params, timeout=get_timeout_tuple(20))
+            response.raise_for_status()
+            return response.url, response.json()
+        except requests.RequestException as exc:
+            raise VendorRequestError(f"PlayNow event details failed: {exc}") from exc
