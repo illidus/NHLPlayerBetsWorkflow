@@ -86,6 +86,7 @@ The standard run (`python pipelines/production/run_production_pipeline.py`) exec
     - Logic: `src/nhl_bets/analysis/normalize.py`
 7. **Analyze**: EV computation using `MARKET_POLICY` with multi-book support.
     - Unified Runner: `python src/nhl_bets/analysis/runner_duckdb.py`
+    - Gating: Enforces `freshness_minutes <= EV_ODDS_FRESHNESS_MINUTES` (Default: 90).
 7. **Audit**: Generate `ev_prob_audit_YYYY-MM-DD.*` reports with full math trace.
     - Fields: `ProbSource` (Calibrated/Raw), `source_prob_column`.
 8. **Accuracy (Optional)**: If `RUN_ACCURACY_BACKTEST=1`, evaluate forecast quality.
@@ -103,6 +104,9 @@ The standard run (`python pipelines/production/run_production_pipeline.py`) exec
   - Forces the use of Raw probabilities for all markets in EV analysis.
 - **Accuracy Evaluation**: `RUN_ACCURACY_BACKTEST=1 python pipelines/production/run_production_pipeline.py`
   - Runs accuracy metrics (Log Loss, Brier, ECE) after the main analysis.
+- **Freshness Gating**:
+  - `EV_ODDS_FRESHNESS_MINUTES=120` (Override default 90m window).
+  - Controls how "stale" odds can be relative to the probability snapshot.
 
 ---
 
@@ -153,7 +157,7 @@ All model logic experiments must be documented in a dedicated markdown file with
 1. **GOALS Integrity:** GOALS EV% can be positive but must be verified if it deviates significantly from implied odds (no unexplained extreme outliers).
 2. **High EV Validation:** Any ASSISTS/POINTS EV > 10% → Verify sample size and confirm it aligns with a known calibrator bucket.
 3. **Row Duplication:** If duplicate `market_key` rows exist, first check for Over/Under symmetry before investigating join defects.
-
+4. **Freshness Coverage:** Check `outputs/monitoring/ev_freshness_coverage_YYYY-MM-DD.md` if `MultiBookBestBets.xlsx` is empty or has unexpected volume.
 
 ## Phase 11 — Historical Odds Ingestion (In Progress)
 **Spec:** docs/phase11_historical_odds/PHASE11_IMPLEMENTATION.md
@@ -171,3 +175,16 @@ All model logic experiments must be documented in a dedicated markdown file with
 
 ### Artifacts (Git Hygiene)
 - MUST NEVER COMMIT: outputs/odds/raw/**, any DuckDB files, cookies/tokens/secrets.
+
+---
+
+## 14. Forensic Audit Capabilities
+- **Script**: `scripts/analysis/audit_model_prob.py`
+- **Output**: `outputs/monitoring/model_prob_derivation_report_YYYY-MM-DD.md`
+- **Purpose**: 
+  - Verifies `Model_Prob` and `EV%` from first principles (Mu -> Dist -> Calib -> Prob).
+  - Links bets back to `fact_prop_odds` to confirm vendor provenance.
+  - Detects player name collisions (e.g., Sebastian Aho) via team validation.
+- **Key Findings (2026-01-06)**:
+  - Validated probability math for SOG (Negative Binomial) and POINTS (Poisson + Isotonic).
+  - Identified requirement for `source_vendor` and `capture_ts_utc` in `MultiBookBestBets.xlsx` to enable O(1) auditing.
