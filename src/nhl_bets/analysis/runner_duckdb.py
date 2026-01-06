@@ -65,7 +65,8 @@ def filter_by_freshness(df, snapshot_ts_dt, window_minutes):
     return df_fresh, df_excluded
 
 def main():
-    logger.info("Starting Multi-Book EV Analysis...")
+    run_start_ts = datetime.now(timezone.utc)
+    logger.info(f"Starting Multi-Book EV Analysis at {run_start_ts.isoformat()}...")
     
     # 1. Load Mapped Odds from DuckDB
     con = get_db_connection(DB_PATH)
@@ -223,14 +224,14 @@ def main():
         df_fresh, df_excluded = filter_by_freshness(df_results, prob_snapshot_ts_dt, freshness_window)
         logger.info(f"Freshness Filter (Window={freshness_window}m): kept {len(df_fresh)}/{total_candidates} rows.")
     else:
-        df_fresh = pd.DataFrame(columns=['Player', 'Team', 'Market', 'Line', 'Side', 'Book', 'Odds', 'Model_Prob', 'Implied_Prob', 'EV%', 'ev_sort', 'Prob_Source', 'Source_Col', 'source_vendor', 'capture_ts_utc', 'raw_payload_hash', 'mu', 'distribution', 'alpha', 'prob_snapshot_ts', 'freshness_minutes'])
+        df_fresh = pd.DataFrame(columns=['Player', 'Team', 'Market', 'Line', 'Side', 'Book', 'Odds', 'Model_Prob', 'Implied_Prob', 'EV%', 'ev_sort', 'Prob_Source', 'Source_Col', 'source_vendor', 'capture_ts_utc', 'capture_ts_dt', 'raw_payload_hash', 'mu', 'distribution', 'alpha', 'prob_snapshot_ts', 'freshness_minutes'])
         df_excluded = pd.DataFrame()
         logger.warning("No bets found to filter for freshness.")
 
     # Generate Diagnostics Report
-    now_utc = datetime.now(timezone.utc)
-    report_ts_str = now_utc.strftime('%H%M%SZ')
-    report_date_str = now_utc.strftime('%Y-%m-%d')
+    run_end_ts = datetime.now(timezone.utc)
+    report_ts_str = run_end_ts.strftime('%H%M%SZ')
+    report_date_str = run_end_ts.strftime('%Y-%m-%d')
     
     # Format: ev_freshness_coverage_YYYY-MM-DD_HHMMSSZ.md
     report_filename = f"ev_freshness_coverage_{report_date_str}_{report_ts_str}.md"
@@ -241,6 +242,8 @@ def main():
     
     report_content = []
     report_content.append(f"# EV Freshness Coverage Report - {report_date_str} {report_ts_str}\n\n")
+    report_content.append(f"- **Run Start (UTC):** {run_start_ts.isoformat()}\n")
+    report_content.append(f"- **Run End (UTC):** {run_end_ts.isoformat()}\n")
     report_content.append(f"- **Total Candidates:** {total_candidates}\n")
     report_content.append(f"- **Retained (Fresh):** {len(df_fresh)}\n")
     report_content.append(f"- **Excluded (Stale/Missing):** {len(df_excluded)}\n")
@@ -251,14 +254,18 @@ def main():
     report_content.append("_Note: Ensure 'Production Projections' runs immediately before 'Odds Ingestion' and 'EV Analysis' for optimal alignment._\n\n")
 
     if not df_fresh.empty:
-        min_cap = df_fresh['capture_ts_utc'].min()
-        max_cap = df_fresh['capture_ts_utc'].max()
+        # Use capture_ts_dt which is aware UTC
+        min_cap = df_fresh['capture_ts_dt'].min()
+        max_cap = df_fresh['capture_ts_dt'].max()
+        min_cap_str = min_cap.isoformat() if pd.notnull(min_cap) else "N/A"
+        max_cap_str = max_cap.isoformat() if pd.notnull(max_cap) else "N/A"
+        
         min_fresh = df_fresh['freshness_minutes'].min()
         med_fresh = df_fresh['freshness_minutes'].median()
         max_fresh = df_fresh['freshness_minutes'].max()
         
         report_content.append(f"### Fresh Data Stats\n")
-        report_content.append(f"- **Capture TS Range:** {min_cap} to {max_cap}\n")
+        report_content.append(f"- **Capture TS Range (UTC):** {min_cap_str} to {max_cap_str}\n")
         report_content.append(f"- **Freshness (min):** Min={min_fresh:.2f}, Med={med_fresh:.2f}, Max={max_fresh:.2f}\n\n")
     
     if not df_excluded.empty:
@@ -268,9 +275,13 @@ def main():
             report_content.append(breakdown.to_markdown(index=False))
             
             # Capture range for excluded
-            report_content.append("\n\n### Excluded Capture Range by Vendor\n")
-            ex_stats = df_excluded.groupby('source_vendor')['capture_ts_utc'].agg(['min', 'max']).reset_index()
-            report_content.append(ex_stats.to_markdown(index=False))
+            report_content.append("\n\n### Excluded Capture Range by Vendor (UTC)\n")
+            if 'capture_ts_dt' in df_excluded.columns:
+                ex_stats = df_excluded.groupby('source_vendor')['capture_ts_dt'].agg(['min', 'max']).reset_index()
+                # Format timestamps in the summary table
+                ex_stats['min'] = ex_stats['min'].apply(lambda x: x.isoformat() if pd.notnull(x) else "N/A")
+                ex_stats['max'] = ex_stats['max'].apply(lambda x: x.isoformat() if pd.notnull(x) else "N/A")
+                report_content.append(ex_stats.to_markdown(index=False))
         else:
             report_content.append("(Book/Vendor columns missing)")
         report_content.append("\n\n")
