@@ -6,6 +6,8 @@
 - `python pipelines/ops/run_daily.py`
 - `python pipelines/ops/run_daily.py --run-odds-ingestion --run-ev`
 - `python pipelines/ops/run_daily.py --run-diagnostics`
+- `python pipelines/ops/run_daily.py --dry-run`
+- `python pipelines/ops/run_daily.py --run-odds-ingestion --step-timeout-seconds 600`
 
 ### Expected Artifacts
 - `outputs/monitoring/daily_run_<YYYY-MM-DD>.md`
@@ -22,6 +24,10 @@
 - If odds ingestion fails, inspect `outputs/monitoring/ingest_status_<YYYY-MM-DD>.json`.
 - If diagnostics fail, confirm `data/db/nhl_backtest.duckdb` exists and `outputs/projections/SingleGamePropProbabilities.csv` is present.
 - Use `FORCE_VENDOR_FAILURE=UNABATED` (or `ODDSSHARK`, `PLAYNOW`) to simulate vendor failures safely.
+- `--dry-run` prints planned steps without creating artifacts.
+
+### Notes
+- OddsShark `event_id_vendor` is derived from capture date + away/home abbreviations for stable joins; raw IDs are stored in `event_id_vendor_raw`.
 
 ## Unabated Backfill
 ### Command
@@ -44,9 +50,11 @@
   - `python pipelines/ops/run_daily.py --run-odds-ingestion --run-ev`
   - `python pipelines/ops/run_daily.py --run-diagnostics` (initial failure, then rerun after fix)
   - `FORCE_VENDOR_FAILURE=UNABATED python pipelines/ops/run_daily.py --run-odds-ingestion --run-diagnostics`
+  - `python pipelines/ops/run_daily.py --dry-run`
   - `python pipelines/odds/backfill_unabated_snapshots.py --start-date 2026-01-05 --end-date 2026-01-06 --dry-run`
   - `python pipelines/odds/backfill_unabated_snapshots.py --start-date 2026-01-07 --end-date 2026-01-07 --max-requests 1 --max-elapsed-seconds 60`
   - `python scripts/golden_run_validate.py`
+  - `pytest -q tests/test_phase12_smoke.py tests/test_oddsshark_event_id.py tests/test_quoted_odds_fields.py`
 - Results:
   - Daily driver help/skip runs completed.
   - Odds ingestion + EV run completed; multi-book EV export produced.
@@ -54,6 +62,8 @@
   - Forced vendor failure recorded for Unabated while run completed.
   - Backfill dry-run printed plan; one-day backfill run completed within caps and skipped duplicate payloads.
   - Golden run validation PASS.
+  - Dry-run prints planned steps with no side effects.
+  - Phase 12 smoke tests PASS.
 - Artifacts:
   - `outputs/monitoring/daily_run_2026-01-06.md`
   - `outputs/monitoring/daily_report_2026-01-06.md`

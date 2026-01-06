@@ -21,3 +21,17 @@
   - Rationale: Provides a single toggle for tests while keeping per-vendor override simple.
   - Alternatives: A single boolean per vendor only.
   - Follow-up needed: No.
+
+- 2026-01-06
+  - Issue: OddsShark HTML does not expose a reliable game date for synthetic event IDs.
+  - Default chosen: Use the capture date (`capture_ts.date()`) when generating the synthetic ID.
+  - Rationale: Maintains deterministic IDs while avoiding brittle HTML parsing for dates.
+  - Alternatives: Parse dates from HTML or require a separate schedule source.
+  - Follow-up needed: Yes.
+
+- 2026-01-06
+  - Issue: Conflict between Phase 12 default daily log creation and new quality gate requiring no artifacts when all flags are off.
+  - Default chosen: If no steps are enabled, `run_daily.py` exits without logging or registry writes.
+  - Rationale: Satisfies the no-side-effects quality gate while keeping explicit runs logged.
+  - Alternatives: Keep logging even when idle and exempt the test.
+  - Follow-up needed: Yes.
