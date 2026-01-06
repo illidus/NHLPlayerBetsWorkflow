@@ -131,6 +131,10 @@ class PlayNowAdapter:
                         "book_name_raw": "PlayNow",
                         "odds_american": int(round(price_american)) if price_american is not None else None,
                         "odds_decimal": float(price_decimal) if price_decimal is not None else None,
+                        "odds_quoted_raw": str(price_decimal) if price_decimal is not None else None,
+                        "odds_quoted_format": "decimal",
+                        "odds_american_derived": True if price_decimal is not None else None,
+                        "odds_decimal_derived": False if price_decimal is not None else None,
                         "is_live": False, # Assume pre-game unless otherwise indicated
                         "raw_payload_path": raw_path,
                         "raw_payload_hash": raw_hash

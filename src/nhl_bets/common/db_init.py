@@ -29,6 +29,10 @@ def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
         book_name_raw TEXT,
         odds_american INTEGER,
         odds_decimal DOUBLE,
+        odds_quoted_raw TEXT,
+        odds_quoted_format TEXT,
+        odds_american_derived BOOLEAN,
+        odds_decimal_derived BOOLEAN,
         is_live BOOLEAN DEFAULT FALSE,
         raw_payload_path TEXT,
         raw_payload_hash TEXT
@@ -37,6 +41,10 @@ def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
 
     # Ensure columns exist for older tables
     con.execute("ALTER TABLE fact_prop_odds ADD COLUMN IF NOT EXISTS event_id_vendor_raw TEXT")
+    con.execute("ALTER TABLE fact_prop_odds ADD COLUMN IF NOT EXISTS odds_quoted_raw TEXT")
+    con.execute("ALTER TABLE fact_prop_odds ADD COLUMN IF NOT EXISTS odds_quoted_format TEXT")
+    con.execute("ALTER TABLE fact_prop_odds ADD COLUMN IF NOT EXISTS odds_american_derived BOOLEAN")
+    con.execute("ALTER TABLE fact_prop_odds ADD COLUMN IF NOT EXISTS odds_decimal_derived BOOLEAN")
     
     # 2. raw_odds_payloads (Ingestion registry)
     con.execute("""
@@ -96,6 +104,13 @@ def insert_odds_records(con: duckdb.DuckDBPyConnection, df):
     if df is None or len(df) == 0:
         return
     
+    # Align DataFrame to table schema
+    table_cols = [row[1] for row in con.execute("PRAGMA table_info('fact_prop_odds')").fetchall()]
+    for col in table_cols:
+        if col not in df.columns:
+            df[col] = None
+    df = df[table_cols]
+
     # Register DataFrame as a virtual table
     con.register("stg_new_odds", df)
     

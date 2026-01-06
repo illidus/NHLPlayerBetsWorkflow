@@ -132,6 +132,10 @@ class UnabatedClient:
                         "book_name_raw": book_name,
                         "odds_american": int(price_american),
                         "odds_decimal": odds_decimal,
+                        "odds_quoted_raw": str(price_american) if price_american is not None else None,
+                        "odds_quoted_format": "american",
+                        "odds_american_derived": False,
+                        "odds_decimal_derived": True,
                         "is_live": prop.get("live", False),
                         "raw_payload_path": raw_path,
                         "raw_payload_hash": raw_hash
