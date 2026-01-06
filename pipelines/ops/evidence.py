@@ -6,9 +6,9 @@ from typing import Any, Dict, List, Optional
 
 import duckdb
 
-from nhl_bets.common.db_init import get_db_connection
+from nhl_bets.common.db_init import get_db_connection, DEFAULT_DB_PATH
 
-DB_PATH = "data/db/nhl_backtest.duckdb"
+DB_PATH = DEFAULT_DB_PATH
 PROBS_PATH = "outputs/projections/SingleGamePropProbabilities.csv"
 ACCURACY_REPORT_PATH = "outputs/backtest_reports/forecast_accuracy.md"
 
@@ -27,6 +27,12 @@ def ensure_evidence_tables(con: duckdb.DuckDBPyConnection) -> None:
             vendor_failures_json TEXT
         )
     """)
+    # Schema migration: Add step_timings_json if not exists
+    try:
+        con.execute("SELECT step_timings_json FROM fact_run_registry LIMIT 0")
+    except duckdb.BinderException:
+        con.execute("ALTER TABLE fact_run_registry ADD COLUMN step_timings_json TEXT")
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS fact_odds_coverage_daily (
             run_id TEXT,
@@ -89,10 +95,17 @@ def record_run_registry(
     step_status: Dict[str, Any],
     counts: Dict[str, Any],
     vendor_failures: Dict[str, Any],
+    step_timings: Dict[str, float] = None,
 ) -> None:
+    if step_timings is None:
+        step_timings = {}
+        
     con.execute(
         """
-        INSERT INTO fact_run_registry VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO fact_run_registry (
+            run_id, run_date, start_ts_utc, end_ts_utc, git_sha, 
+            flags_json, step_status_json, counts_json, vendor_failures_json, step_timings_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             run_id,
@@ -104,6 +117,7 @@ def record_run_registry(
             json.dumps(step_status, sort_keys=True),
             json.dumps(counts, sort_keys=True),
             json.dumps(vendor_failures, sort_keys=True),
+            json.dumps(step_timings, sort_keys=True),
         ],
     )
 

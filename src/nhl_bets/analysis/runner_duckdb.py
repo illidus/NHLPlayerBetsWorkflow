@@ -209,64 +209,92 @@ def main():
         
     df_results = pd.DataFrame(results)
     
-    if df_results.empty:
-        logger.warning("No bets found after filtering.")
-        df_ev = pd.DataFrame(columns=['Player', 'Team', 'Market', 'Line', 'Side', 'Book', 'Odds', 'Model_Prob', 'Implied_Prob', 'EV%', 'ev_sort', 'Prob_Source', 'Source_Col', 'source_vendor', 'capture_ts_utc', 'raw_payload_hash', 'mu', 'distribution', 'alpha', 'prob_snapshot_ts', 'freshness_minutes'])
-    else:
-        # --- FRESHNESS GATING (Phase 12.2) ---
-        
-        # 2. Apply Filter Window
-        try:
-            freshness_window = float(os.environ.get('EV_ODDS_FRESHNESS_MINUTES', 90))
-        except ValueError:
-            freshness_window = 90.0
-            
-        total_candidates = len(df_results)
-        
-        df_fresh, df_excluded = filter_by_freshness(df_results, prob_snapshot_ts_dt, freshness_window)
-        
-        logger.info(f"Freshness Filter (Window={freshness_window}m): kept {len(df_fresh)}/{total_candidates} rows.")
-        
-        # 3. Generate Diagnostics Report
-        report_date = datetime.now().strftime('%Y-%m-%d')
-        report_path = f"outputs/monitoring/ev_freshness_coverage_{report_date}.md"
-        os.makedirs(os.path.dirname(report_path), exist_ok=True)
-        
-        with open(report_path, 'w') as f:
-            f.write(f"# EV Freshness Coverage Report - {report_date}\n\n")
-            f.write(f"- **Total Candidates:** {total_candidates}\n")
-            f.write(f"- **Retained (Fresh):** {len(df_fresh)}\n")
-            f.write(f"- **Excluded (Stale/Missing):** {len(df_excluded)}\n")
-            f.write(f"- **Window:** {freshness_window} minutes\n")
-            f.write(f"- **Snapshot TS:** {prob_snapshot_ts_str}\n\n")
+    # --- FRESHNESS GATING & REPORTING (Phase 12.2 / 12.3) ---
+    # Always generate report, even if empty
+    
+    try:
+        freshness_window = float(os.environ.get('EV_ODDS_FRESHNESS_MINUTES', 90))
+    except ValueError:
+        freshness_window = 90.0
 
-            if not df_fresh.empty:
-                min_cap = df_fresh['capture_ts_utc'].min()
-                max_cap = df_fresh['capture_ts_utc'].max()
-                min_fresh = df_fresh['freshness_minutes'].min()
-                max_fresh = df_fresh['freshness_minutes'].max()
-                f.write(f"- **Capture TS Range:** {min_cap} to {max_cap}\n")
-                f.write(f"- **Freshness (min) Range:** {min_fresh:.2f} to {max_fresh:.2f}\n\n")
-            
-            if not df_excluded.empty:
-                f.write("## Excluded Breakdown by Vendor/Book\n")
-                if 'Book' in df_excluded.columns and 'source_vendor' in df_excluded.columns:
-                    breakdown = df_excluded.groupby(['source_vendor', 'Book']).size().reset_index(name='count')
-                    f.write(breakdown.to_markdown(index=False))
-                else:
-                    f.write("(Book/Vendor columns missing)")
-                f.write("\n\n")
-                
-        # Proceed with fresh data
-        df_filtered = df_fresh[df_fresh['ev_sort'] >= 0.02].copy()
+    total_candidates = len(df_results)
+    
+    if not df_results.empty:
+        df_fresh, df_excluded = filter_by_freshness(df_results, prob_snapshot_ts_dt, freshness_window)
+        logger.info(f"Freshness Filter (Window={freshness_window}m): kept {len(df_fresh)}/{total_candidates} rows.")
+    else:
+        df_fresh = pd.DataFrame(columns=['Player', 'Team', 'Market', 'Line', 'Side', 'Book', 'Odds', 'Model_Prob', 'Implied_Prob', 'EV%', 'ev_sort', 'Prob_Source', 'Source_Col', 'source_vendor', 'capture_ts_utc', 'raw_payload_hash', 'mu', 'distribution', 'alpha', 'prob_snapshot_ts', 'freshness_minutes'])
+        df_excluded = pd.DataFrame()
+        logger.warning("No bets found to filter for freshness.")
+
+    # Generate Diagnostics Report
+    now_utc = datetime.now(timezone.utc)
+    report_ts_str = now_utc.strftime('%H%M%SZ')
+    report_date_str = now_utc.strftime('%Y-%m-%d')
+    
+    # Format: ev_freshness_coverage_YYYY-MM-DD_HHMMSSZ.md
+    report_filename = f"ev_freshness_coverage_{report_date_str}_{report_ts_str}.md"
+    report_path = os.path.join("outputs", "monitoring", report_filename)
+    latest_path = os.path.join("outputs", "monitoring", "ev_freshness_coverage_latest.md")
+    
+    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    
+    report_content = []
+    report_content.append(f"# EV Freshness Coverage Report - {report_date_str} {report_ts_str}\n\n")
+    report_content.append(f"- **Total Candidates:** {total_candidates}\n")
+    report_content.append(f"- **Retained (Fresh):** {len(df_fresh)}\n")
+    report_content.append(f"- **Excluded (Stale/Missing):** {len(df_excluded)}\n")
+    report_content.append(f"- **Window:** {freshness_window} minutes\n")
+    report_content.append(f"- **Snapshot TS:** {prob_snapshot_ts_str}\n\n")
+    
+    report_content.append("## Diagnostics\n")
+    report_content.append("_Note: Ensure 'Production Projections' runs immediately before 'Odds Ingestion' and 'EV Analysis' for optimal alignment._\n\n")
+
+    if not df_fresh.empty:
+        min_cap = df_fresh['capture_ts_utc'].min()
+        max_cap = df_fresh['capture_ts_utc'].max()
+        min_fresh = df_fresh['freshness_minutes'].min()
+        med_fresh = df_fresh['freshness_minutes'].median()
+        max_fresh = df_fresh['freshness_minutes'].max()
         
-        # 5. Filter and Sort
-        # Deduplication (Deterministic)
-        # Sort by capture_ts_utc descending so we keep the latest
-        if 'capture_ts_utc' in df_filtered.columns:
-            df_filtered = df_filtered.sort_values('capture_ts_utc', ascending=False)
+        report_content.append(f"### Fresh Data Stats\n")
+        report_content.append(f"- **Capture TS Range:** {min_cap} to {max_cap}\n")
+        report_content.append(f"- **Freshness (min):** Min={min_fresh:.2f}, Med={med_fresh:.2f}, Max={max_fresh:.2f}\n\n")
+    
+    if not df_excluded.empty:
+        report_content.append("## Excluded Breakdown by Vendor/Book\n")
+        if 'Book' in df_excluded.columns and 'source_vendor' in df_excluded.columns:
+            breakdown = df_excluded.groupby(['source_vendor', 'Book']).size().reset_index(name='count')
+            report_content.append(breakdown.to_markdown(index=False))
             
-        # Drop duplicates based on stable key + source_vendor
+            # Capture range for excluded
+            report_content.append("\n\n### Excluded Capture Range by Vendor\n")
+            ex_stats = df_excluded.groupby('source_vendor')['capture_ts_utc'].agg(['min', 'max']).reset_index()
+            report_content.append(ex_stats.to_markdown(index=False))
+        else:
+            report_content.append("(Book/Vendor columns missing)")
+        report_content.append("\n\n")
+    
+    full_report = "".join(report_content)
+    
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write(full_report)
+        
+    # Update Latest Pointer
+    with open(latest_path, 'w', encoding='utf-8') as f:
+        f.write(full_report)
+        
+    # Proceed with fresh data
+    df_filtered = df_fresh[df_fresh['ev_sort'] >= 0.02].copy() if not df_fresh.empty else pd.DataFrame()
+    
+    # 5. Filter and Sort
+    # Deduplication (Deterministic)
+    # Sort by capture_ts_utc descending so we keep the latest
+    if not df_filtered.empty and 'capture_ts_utc' in df_filtered.columns:
+        df_filtered = df_filtered.sort_values('capture_ts_utc', ascending=False)
+        
+    # Drop duplicates based on stable key + source_vendor
+    if not df_filtered.empty:
         dedup_cols = ['Player', 'Market', 'Line', 'Side', 'Book', 'source_vendor']
         before_count = len(df_filtered)
         df_filtered = df_filtered.drop_duplicates(subset=dedup_cols, keep='first')
@@ -276,6 +304,8 @@ def main():
             logger.info(f"Deduplicated bets: {before_count} -> {after_count}")
         
         df_ev = df_filtered.sort_values('ev_sort', ascending=False)
+    else:
+        df_ev = pd.DataFrame()
     
     logger.info(f"Found {len(df_ev)} bets with EV% >= 2.0%")
     
