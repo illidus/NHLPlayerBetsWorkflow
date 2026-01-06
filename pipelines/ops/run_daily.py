@@ -37,10 +37,18 @@ def _ensure_script_exists(path: str) -> None:
         raise FileNotFoundError(f"Required script missing: {path}")
 
 
-def _run_subprocess(step_name: str, cmd: List[str], env: Dict[str, str]) -> Dict[str, str]:
+def _run_subprocess(
+    step_name: str,
+    cmd: List[str],
+    env: Dict[str, str],
+    timeout_seconds: int,
+) -> Dict[str, str]:
     result = {"status": "PASS", "error": None}
     try:
-        subprocess.check_call(cmd, env=env)
+        subprocess.check_call(cmd, env=env, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        result["status"] = "FAIL"
+        result["error"] = f"{step_name} timed out after {timeout_seconds}s"
     except subprocess.CalledProcessError as exc:
         result["status"] = "FAIL"
         result["error"] = f"{step_name} failed with exit code {exc.returncode}"
@@ -88,6 +96,13 @@ def main() -> int:
     parser.add_argument("--run-outcomes", action="store_true", help="Run outcomes refresh step.")
     parser.add_argument("--run-diagnostics", action="store_true", help="Run diagnostics and evidence reports.")
     parser.add_argument("--fail-fast", action="store_true", help="Fail on vendor errors.")
+    parser.add_argument("--dry-run", action="store_true", help="Print planned steps and exit.")
+    parser.add_argument(
+        "--step-timeout-seconds",
+        type=int,
+        default=int(os.environ.get("DAILY_STEP_TIMEOUT_SECONDS", "900")),
+        help="Per-step timeout in seconds.",
+    )
 
     args = parser.parse_args()
 
@@ -99,6 +114,26 @@ def main() -> int:
         "run_diagnostics": _resolve_flag("RUN_DIAGNOSTICS", args.run_diagnostics),
         "fail_fast": _resolve_flag("FAIL_FAST", args.fail_fast),
     }
+
+    enabled_steps = [
+        name
+        for name, enabled in flags.items()
+        if name not in {"fail_fast"} and enabled
+    ]
+
+    if args.dry_run:
+        print("Dry-run mode enabled.")
+        if enabled_steps:
+            print("Steps that would run:")
+            for step in enabled_steps:
+                print(f"- {step}")
+        else:
+            print("No steps enabled.")
+        return 0
+
+    if not enabled_steps:
+        print("No steps enabled; exiting without side effects.")
+        return 0
 
     start_ts = datetime.now(timezone.utc)
     run_date = start_ts.date().isoformat()
@@ -133,6 +168,7 @@ def main() -> int:
                     "odds_ingestion",
                     [PYTHON, ingest_script],
                     env,
+                    args.step_timeout_seconds,
                 )
                 step_status["odds_ingestion"] = result["status"]
                 if result["error"]:
@@ -160,6 +196,7 @@ def main() -> int:
                     "production_snapshot",
                     [PYTHON, snapshot_script],
                     env,
+                    args.step_timeout_seconds,
                 )
                 step_status["production_snapshot"] = result["status"]
                 if result["error"]:
@@ -181,6 +218,7 @@ def main() -> int:
                     "ev_reporting",
                     [PYTHON, ev_script],
                     env,
+                    args.step_timeout_seconds,
                 )
                 step_status["ev_reporting"] = result["status"]
                 if result["error"]:
