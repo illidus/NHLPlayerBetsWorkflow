@@ -17,7 +17,7 @@ from nhl_bets.scrapers.unabated_client import UnabatedClient
 from nhl_bets.scrapers.oddsshark_client import OddsSharkClient
 from nhl_bets.scrapers.playnow_api_client import PlayNowAPIClient
 from nhl_bets.scrapers.playnow_adapter import PlayNowAdapter
-from nhl_bets.common.db_init import initialize_phase11_tables, insert_odds_records
+from nhl_bets.common.db_init import initialize_phase11_tables, insert_odds_records, insert_unabated_metadata
 from nhl_bets.common.storage import save_raw_payload
 from nhl_bets.common.vendor_utils import VendorRequestError
 
@@ -72,13 +72,20 @@ def run_unabated_ingestion(con: duckdb.DuckDBPyConnection) -> Dict[str, Any]:
             logger.info(f"UNABATED: Snapshot with hash {sha_hash} already ingested. Skipping.")
             return status
             
-        records = client.parse_snapshot(snapshot, rel_path, sha_hash, capture_ts)
+        parsed_data = client.parse_snapshot(snapshot, rel_path, sha_hash, capture_ts)
+        records = parsed_data["odds"]
         if records:
             df = pd.DataFrame(records)
             insert_odds_records(con, df)
+            
+            # Insert metadata
+            events_df = pd.DataFrame(parsed_data["events"])
+            players_df = pd.DataFrame(parsed_data["players"])
+            insert_unabated_metadata(con, events_df, players_df)
+            
             register_payload(con, "UNABATED", capture_ts, rel_path, sha_hash)
             status["records"] = len(records)
-            logger.info(f"UNABATED: Inserted {len(records)} records.")
+            logger.info(f"UNABATED: Inserted {len(records)} records and updated metadata.")
     except VendorRequestError as e:
         status["status"] = "FAIL"
         status["error_type"] = "vendor"

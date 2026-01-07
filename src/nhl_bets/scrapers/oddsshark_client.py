@@ -1,7 +1,7 @@
 import requests
 import logging
 from bs4 import BeautifulSoup
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 from typing import List, Dict, Any, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from nhl_bets.common.storage import save_raw_payload
@@ -99,32 +99,44 @@ class OddsSharkClient:
             # Find book names in header
             header_items = container.select(".player-props--header .player-props--item img")
             book_names = [img.get('alt', '').strip() for img in header_items]
-            # Some headers might not have images or be different. 
-            # Looking at the sample, books start from the 3rd column (index 2).
-            # Index 0: Player, Index 1: Best Odds, Index 2+: Specific Books
             
             rows = container.select(".player-props--row")
             
-            # Find game info preceding the rows
-            # Game info looks like: <div class="props-game-info"> <span class="props-teams">ANA @ WSH -</span> ...
+            # Tracking current game info as we iterate through rows
+            current_event_name = "unknown"
+            current_home_team = None
+            current_away_team = None
+            current_event_start_time_utc = None
             
             for row in rows:
                 event_id_raw = row.get('data-event', 'unknown')
                 
                 # Find the game info by looking at the previous sibling that is not a row
+                # In OddsShark, multiple rows follow one game-info div.
                 game_info = row.find_previous(class_="props-game-info")
-                event_name = "unknown"
-                home_team = None
-                away_team = None
                 if game_info:
                     teams_el = game_info.select_one(".props-teams")
                     if teams_el:
                         event_name = teams_el.get_text(strip=True).replace(" -", "")
                         if " @ " in event_name:
                             away_team, home_team = event_name.split(" @ ")
+                            current_event_name = event_name
+                            current_home_team = home_team.strip()
+                            current_away_team = away_team.strip()
+                    
+                    time_el = game_info.select_one(".event-time")
+                    if time_el:
+                        event_time_str = time_el.get_text(strip=True)
+                        if "ET" in event_time_str:
+                            try:
+                                time_part = event_time_str.replace(" ET", "").strip()
+                                time_dt = datetime.strptime(time_part, "%I:%M %p")
+                                combined_dt = datetime.combine(capture_ts.date(), time_dt.time())
+                                current_event_start_time_utc = combined_dt + timedelta(hours=5)
+                            except Exception as e:
+                                logger.warning(f"Failed to parse OddsShark time '{event_time_str}': {e}")
 
-                event_date = capture_ts.date()
-                event_id = build_synthetic_event_id(event_date, away_team, home_team) or event_id_raw
+                event_id = build_synthetic_event_id(capture_ts.date(), current_away_team, current_home_team) or event_id_raw
                 
                 player_name_el = row.select_one(".player-name")
                 if not player_name_el:
@@ -133,14 +145,10 @@ class OddsSharkClient:
                 
                 # Each book-row corresponds to a column in the header
                 book_cells = row.select(".book-row")
-                # Skip the "Best Odds" cell (usually the first book-row)
                 
                 for cell_idx, cell in enumerate(book_cells):
                     if cell_idx == 0: continue # Skip Best Odds column
                     
-                    # Header index for book name would be cell_idx - 1 if we skip Player/Best Odds
-                    # Wait, book_cells[0] is Best Odds. book_cells[1] is the first book.
-                    # header_items[0] is usually the first book.
                     header_idx = cell_idx - 1
                     if header_idx >= len(book_names):
                         book_name = f"Unknown Book {header_idx}"
@@ -184,10 +192,10 @@ class OddsSharkClient:
                                 "capture_ts_utc": capture_ts,
                                 "event_id_vendor": event_id,
                                 "event_id_vendor_raw": event_id_raw,
-                                "event_name_raw": event_name,
-                                "event_start_ts_utc": None, # HTML doesn't easily give UTC timestamp per row
-                                "home_team": home_team,
-                                "away_team": away_team,
+                                "event_name_raw": current_event_name,
+                                "event_start_time_utc": current_event_start_time_utc,
+                                "home_team": current_home_team,
+                                "away_team": current_away_team,
                                 "player_id_vendor": None,
                                 "player_name_raw": player_name,
                                 "market_type": market_type,

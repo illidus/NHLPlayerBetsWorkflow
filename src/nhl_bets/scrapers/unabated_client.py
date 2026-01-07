@@ -47,9 +47,11 @@ class UnabatedClient:
         except requests.RequestException as exc:
             raise VendorRequestError(f"Unabated request failed: {exc}") from exc
 
-    def parse_snapshot(self, data: Dict[str, Any], raw_path: str, raw_hash: str, capture_ts: datetime) -> List[Dict[str, Any]]:
-        """Parses the Unabated JSON into normalized records."""
+    def parse_snapshot(self, data: Dict[str, Any], raw_path: str, raw_hash: str, capture_ts: datetime) -> Dict[str, Any]:
+        """Parses the Unabated JSON into normalized records and metadata."""
         records = []
+        events_map = {}
+        players_map = {}
         
         people = data.get("people", {})
         market_sources = {str(ms["id"]): ms["name"] for ms in data.get("marketSources", [])}
@@ -87,6 +89,25 @@ class UnabatedClient:
             home_team = teams_map.get(home_team_id, {}).get("abbreviation")
             away_team = teams_map.get(away_team_id, {}).get("abbreviation")
             
+            # Metadata collection
+            if event_id not in events_map:
+                events_map[event_id] = {
+                    "vendor_event_id": event_id,
+                    "event_start_time_utc": event_start,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "league": "NHL",
+                    "capture_ts_utc": capture_ts
+                }
+            
+            if person_id not in players_map:
+                players_map[person_id] = {
+                    "vendor_person_id": person_id,
+                    "player_name": player_name,
+                    "team_abbr": None, # Unabated doesn't always have a single stable team for a person in this view
+                    "capture_ts_utc": capture_ts
+                }
+
             sides = prop.get("sides", {})
             if market_type == "GOALS" and len(sides) < 2:
                 continue # Skip Anytime Goal Scorer (usually only 'Yes' side)
@@ -119,11 +140,13 @@ class UnabatedClient:
                         "capture_ts_utc": capture_ts,
                         "event_id_vendor": event_id,
                         "event_id_vendor_raw": event_id,
+                        "vendor_event_id": event_id, # Phase 12.8
                         "event_name_raw": event_name,
-                        "event_start_ts_utc": event_start,
+                        "event_start_time_utc": event_start,
                         "home_team": home_team,
                         "away_team": away_team,
                         "player_id_vendor": person_id,
+                        "vendor_person_id": person_id, # Phase 12.8
                         "player_name_raw": player_name,
                         "market_type": market_type,
                         "line": float(line),
@@ -138,10 +161,19 @@ class UnabatedClient:
                         "odds_decimal_derived": True,
                         "is_live": prop.get("live", False),
                         "raw_payload_path": raw_path,
-                        "raw_payload_hash": raw_hash
+                        "raw_payload_hash": raw_hash,
+                        "vendor_market_source_id": book_id,
+                        "vendor_bet_type_id": bet_type_id,
+                        "vendor_outcome_key": side_key,
+                        "vendor_price_raw": str(price_american),
+                        "vendor_price_format": "american"
                     })
                     
-        return records
+        return {
+            "odds": records,
+            "events": list(events_map.values()),
+            "players": list(players_map.values())
+        }
 
     def run_ingestion(self) -> List[Dict[str, Any]]:
         """Fetch, save, and parse Unabated odds."""
@@ -150,7 +182,8 @@ class UnabatedClient:
         
         logger.info(f"Saved Unabated snapshot to {rel_path} (hash: {sha_hash})")
         
-        normalized_records = self.parse_snapshot(snapshot, rel_path, sha_hash, capture_ts)
+        parsed_data = self.parse_snapshot(snapshot, rel_path, sha_hash, capture_ts)
+        normalized_records = parsed_data["odds"]
         logger.info(f"Parsed {len(normalized_records)} records from Unabated snapshot.")
         
         return normalized_records
