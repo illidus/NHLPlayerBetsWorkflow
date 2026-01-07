@@ -29,19 +29,45 @@ def get_latest_audit_csv():
         return None
     return max(files, key=os.path.getmtime)
 
+def get_best_bets_xlsx():
+    best_bets = os.path.join("outputs", "ev_analysis", "MultiBookBestBets.xlsx")
+    return best_bets if os.path.exists(best_bets) else None
+
+def load_validation_frame():
+    best_bets = get_best_bets_xlsx()
+    if best_bets:
+        df = pd.read_excel(best_bets)
+        if not df.empty:
+            return df, best_bets
+
+    audit_file = get_latest_audit_csv()
+    if audit_file:
+        df = pd.read_csv(audit_file)
+        if not df.empty:
+            return df, audit_file
+
+    return None, None
+
+def normalize_validation_columns(df):
+    if 'ProbSource' not in df.columns and 'Prob_Source' in df.columns:
+        df['ProbSource'] = df['Prob_Source']
+    if 'market_key' not in df.columns and 'Market' in df.columns:
+        df['market_key'] = df['Market']
+    return df
+
 def validate_run(mode_name, expected_calibrated=True):
     print(f"\n>>> Validating Mode: {mode_name}")
     
-    audit_file = get_latest_audit_csv()
-    if not audit_file:
-        print(f"FAIL: No audit CSV found for {mode_name}")
+    df, source_path = load_validation_frame()
+    if df is None:
+        print(f"FAIL: No validation artifact found for {mode_name}")
         return False
     
-    print(f"Checking audit file: {audit_file}")
-    df = pd.read_csv(audit_file)
+    print(f"Checking artifact: {source_path}")
+    df = normalize_validation_columns(df)
     
     if df.empty:
-        print(f"FAIL: Audit file is empty for {mode_name}")
+        print(f"FAIL: Validation artifact is empty for {mode_name}")
         return False
 
     # Check for calibrated presence
@@ -52,7 +78,7 @@ def validate_run(mode_name, expected_calibrated=True):
     
     if expected_calibrated:
         # Check ASSISTS and POINTS specifically
-        mask_ast_pts = df['market_key'].str.contains('Assists|Points', case=False)
+        mask_ast_pts = df['market_key'].fillna('').str.contains('Assists|Points', case=False)
         if mask_ast_pts.any():
             sub = df[mask_ast_pts]
             ast_pts_calib = (sub['ProbSource'] == 'Calibrated').any()
@@ -64,7 +90,7 @@ def validate_run(mode_name, expected_calibrated=True):
             results.append(("[INFO] No ASSISTS/POINTS bets found in this slate to verify calibration.", True))
             
         # Check GOALS/SOG specifically
-        mask_raw = df['market_key'].str.contains('Goals|Shots|Blocks', case=False)
+        mask_raw = df['market_key'].fillna('').str.contains('Goals|Shots|SOG|Blocks|BLK', case=False)
         if mask_raw.any():
             sub = df[mask_raw]
             raw_is_raw = (sub['ProbSource'] == 'Raw').any()
