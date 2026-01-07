@@ -37,11 +37,23 @@ class UnabatedClient:
     )
     def fetch_snapshot(self) -> Dict[str, Any]:
         """Fetches the latest prop odds snapshot from Unabated."""
-        logger.info(f"Fetching Unabated snapshot from {self.URL}...")
+        # Add cache-busting timestamp to the URL
+        timestamp = int(datetime.now(timezone.utc).timestamp())
+        url = f"{self.URL}?t={timestamp}"
+        
+        logger.info(f"Fetching Unabated snapshot from {url}...")
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Accept": "application/json"
+        }
+        
         if should_force_vendor_failure("UNABATED"):
             raise VendorRequestError("Forced Unabated failure via env var.")
         try:
-            response = requests.get(self.URL, timeout=get_timeout_tuple(self.timeout))
+            response = requests.get(url, headers=headers, timeout=get_timeout_tuple(self.timeout))
             response.raise_for_status()
             return response.json()
         except requests.RequestException as exc:
@@ -55,6 +67,8 @@ class UnabatedClient:
         
         people = data.get("people", {})
         market_sources = {str(ms["id"]): ms["name"] for ms in data.get("marketSources", [])}
+        # Include statusId 1 (Active) and 3 (which includes Bet365/Heritage/Pinnacle-3838)
+        active_market_sources = {str(ms["id"]) for ms in data.get("marketSources", []) if ms.get("statusId") in [1, 3]}
         odds_dict = data.get("odds", {})
         teams_map = data.get("teams", {})
         
@@ -62,8 +76,10 @@ class UnabatedClient:
         pregame_props = odds_dict.get("lg6:pt1:pregame", [])
         
         for prop in pregame_props:
+            # We focus on the pregame props (pt1)
+            # Strictly skip any non-standard sub-types (Milestones, Alt lines etc)
             if prop.get("betSubType") is not None:
-                continue # Skip Milestones/Alt lines for now
+                continue 
                 
             bet_type_id = prop.get("betTypeId")
             market_type = self.BET_TYPE_MAP.get(bet_type_id)
@@ -112,62 +128,104 @@ class UnabatedClient:
             if market_type == "GOALS" and len(sides) < 2:
                 continue # Skip Anytime Goal Scorer (usually only 'Yes' side)
                 
+            # Local collection for this prop to pick latest marketLineId per book/side/line
+            prop_best_records = {}
+
             for side_key, book_data in sides.items():
                 # side_key usually looks like 'si1:pid45587' or 'si0:pid45587'
-                # Unabated convention: si1 is typically OVER, si0 is typically UNDER for props
-                side = "OVER" if side_key.startswith("si1") else "UNDER"
+                # VERIFIED BY SCREENSHOT: 
+                # si1 is typically UNDER, si0 is typically OVER for prop markets
+                side = "UNDER" if side_key.startswith("si1") else "OVER"
                 
                 for ms_key, price_data in book_data.items():
-                    # ms_key looks like 'ms73'
                     book_id = ms_key.replace("ms", "")
+                    
+                    # Skip inactive books
+                    if book_id not in active_market_sources:
+                        continue
+
+                    # Skip blurred lines (Unabated requires subscription for some books)
+                    if price_data.get("isBlurred", False):
+                        continue
+
                     book_name = market_sources.get(book_id, f"Unknown Book {book_id}")
                     
                     line = price_data.get("points")
                     price_american = price_data.get("americanPrice")
+                    market_line_id = price_data.get("marketLineId", 0)
                     
                     if line is None or price_american is None:
                         continue
                         
-                    # Calculate decimal odds
-                    odds_decimal = None
-                    if price_american > 0:
-                        odds_decimal = (price_american / 100) + 1
-                    elif price_american < 0:
-                        odds_decimal = (100 / abs(price_american)) + 1
+                    def add_record(l, p, sid, outcome_key, ml_id):
+                        l_float = float(l)
+                        # Key by book, side, and line to find the best version
+                        best_key = (book_id, sid, l_float)
+                        
+                        if best_key in prop_best_records:
+                            if ml_id <= prop_best_records[best_key]["market_line_id"]:
+                                return # Keep existing better record
+                        
+                        # Calculate decimal odds
+                        o_dec = None
+                        if p > 0: o_dec = (p / 100) + 1
+                        elif p < 0: o_dec = (100 / abs(p)) + 1
+                        
+                        prop_best_records[best_key] = {
+                            "market_line_id": ml_id,
+                            "data": {
+                                "source_vendor": "UNABATED",
+                                "capture_ts_utc": capture_ts,
+                                "event_id_vendor": event_id,
+                                "event_id_vendor_raw": event_id,
+                                "vendor_event_id": event_id,
+                                "event_name_raw": event_name,
+                                "event_start_time_utc": event_start,
+                                "home_team": home_team,
+                                "away_team": away_team,
+                                "player_id_vendor": person_id,
+                                "vendor_person_id": person_id,
+                                "player_name_raw": player_name,
+                                "market_type": market_type,
+                                "line": l_float,
+                                "side": sid,
+                                "book_id_vendor": book_id,
+                                "book_name_raw": book_name,
+                                "odds_american": int(p),
+                                "odds_decimal": o_dec,
+                                "odds_quoted_raw": str(p),
+                                "odds_quoted_format": "american",
+                                "odds_american_derived": False,
+                                "odds_decimal_derived": True,
+                                "is_live": prop.get("live", False),
+                                "raw_payload_path": raw_path,
+                                "raw_payload_hash": raw_hash,
+                                "vendor_market_source_id": book_id,
+                                "vendor_bet_type_id": bet_type_id,
+                                "vendor_outcome_key": outcome_key,
+                                "vendor_price_raw": str(p),
+                                "vendor_price_format": "american"
+                            }
+                        }
+
+                    add_record(line, price_american, side, side_key, market_line_id)
                     
-                    records.append({
-                        "source_vendor": "UNABATED",
-                        "capture_ts_utc": capture_ts,
-                        "event_id_vendor": event_id,
-                        "event_id_vendor_raw": event_id,
-                        "vendor_event_id": event_id, # Phase 12.8
-                        "event_name_raw": event_name,
-                        "event_start_time_utc": event_start,
-                        "home_team": home_team,
-                        "away_team": away_team,
-                        "player_id_vendor": person_id,
-                        "vendor_person_id": person_id, # Phase 12.8
-                        "player_name_raw": player_name,
-                        "market_type": market_type,
-                        "line": float(line),
-                        "side": side,
-                        "book_id_vendor": book_id,
-                        "book_name_raw": book_name,
-                        "odds_american": int(price_american),
-                        "odds_decimal": odds_decimal,
-                        "odds_quoted_raw": str(price_american) if price_american is not None else None,
-                        "odds_quoted_format": "american",
-                        "odds_american_derived": False,
-                        "odds_decimal_derived": True,
-                        "is_live": prop.get("live", False),
-                        "raw_payload_path": raw_path,
-                        "raw_payload_hash": raw_hash,
-                        "vendor_market_source_id": book_id,
-                        "vendor_bet_type_id": bet_type_id,
-                        "vendor_outcome_key": side_key,
-                        "vendor_price_raw": str(price_american),
-                        "vendor_price_format": "american"
-                    })
+                    # Check for alternate lines
+                    alt_lines = price_data.get("alternateLines")
+                    if alt_lines and isinstance(alt_lines, list):
+                        for alt in alt_lines:
+                            if not alt: continue
+                            alt_line = alt.get("points")
+                            alt_price = alt.get("americanPrice")
+                            alt_ml_id = alt.get("marketLineId", 0) # usually 0 for alts
+                            if alt_line is not None and alt_price is not None:
+                                # We use a lower priority for alts if they clash with main lines
+                                # but usually alts don't have IDs anyway.
+                                add_record(alt_line, alt_price, side, f"{side_key}_alt_{alt_line}", alt_ml_id)
+
+            # Extract the actual records from the deduplicated map
+            for best_rec in prop_best_records.values():
+                records.append(best_rec["data"])
                     
         return {
             "odds": records,

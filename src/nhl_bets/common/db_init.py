@@ -82,11 +82,21 @@ def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
         con.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_prop_odds_dedup ON fact_prop_odds(
                 source_vendor, capture_ts_utc, event_id_vendor, player_id_vendor, 
-                player_name_raw, market_type, line, side, book_id_vendor, raw_payload_hash
+                player_name_raw, market_type, line, side, book_id_vendor, raw_payload_hash,
+                vendor_outcome_key
             )
         """)
     elif 'event_start_time_utc' not in cols:
         con.execute("ALTER TABLE fact_prop_odds ADD COLUMN event_start_time_utc TIMESTAMP")
+
+    # Ensure unique index includes outcome key for Unabated/Alternate support
+    con.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_prop_odds_dedup ON fact_prop_odds(
+            source_vendor, capture_ts_utc, event_id_vendor, player_id_vendor, 
+            player_name_raw, market_type, line, side, book_id_vendor, raw_payload_hash,
+            vendor_outcome_key
+        )
+    """)
 
     
     # 2. raw_odds_payloads (Ingestion registry)
@@ -215,7 +225,8 @@ def insert_odds_records(con: duckdb.DuckDBPyConnection, df):
         n.market_type = e.market_type AND
         n.line = e.line AND
         n.side = e.side AND
-        n.book_id_vendor = e.book_id_vendor
+        n.book_id_vendor = e.book_id_vendor AND
+        COALESCE(n.vendor_outcome_key, 'NULL') = COALESCE(e.vendor_outcome_key, 'NULL')
     WHERE e.source_vendor IS NULL
     """)
     
