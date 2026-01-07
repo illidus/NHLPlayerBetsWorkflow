@@ -19,23 +19,25 @@ def test_insert_odds_records_utc_handling():
     now_utc = now_utc.replace(microsecond=123456)
     
     data = [{
-        "source_vendor": "TEST",
         "capture_ts_utc": now_utc,
-        "event_start_ts_utc": now_utc + timedelta(hours=1),
-        "event_id_vendor": "E1",
-        "market_type": "SOG",
-        "player_name_raw": "Player A",
-        "line": 2.5,
-        "side": "OVER",
-        "book_id_vendor": "B1"
+        "event_id_vendor": "test_event",
+        "event_id_vendor_raw": "test_event_raw",
+        "event_name_raw": "Test Event",
+        "event_start_time_utc": now_utc + timedelta(hours=1),
+        "home_team": "HOME",
+        "away_team": "AWAY",
     }]
     df = pd.DataFrame(data)
     
     # Insert
     insert_odds_records(con, df)
     
-    # Read back
-    res = con.execute("SELECT capture_ts_utc FROM fact_prop_odds").fetchall()
+    # Read back and check types
+    res = con.execute("SELECT capture_ts_utc, event_start_time_utc FROM fact_prop_odds").fetchall()
+    for row in res:
+        capture_ts, start_time = row
+        assert isinstance(capture_ts, datetime)
+        assert isinstance(start_time, datetime)
     ts_db = res[0][0]
     
     # DuckDB returns naive datetime

@@ -198,7 +198,7 @@ def update_event_mappings(con: duckdb.DuckDBPyConnection):
         (TRIM(raw.home_team) = g.away_team AND TRIM(raw.away_team) = g.home_team)
     LEFT JOIN dim_events_mapping em ON raw.event_id_vendor = em.vendor_event_id AND raw.source_vendor = em.source_vendor
     WHERE em.vendor_event_id IS NULL
-      AND ABS(DATEDIFF('day', CAST(raw.capture_ts_utc AS DATE), CAST(g.game_date AS DATE))) <= 1
+      AND ABS(DATEDIFF('day', CAST(COALESCE(raw.event_start_time_utc, raw.capture_ts_utc) AS DATE), CAST(g.game_date AS DATE))) <= 1
       AND raw.home_team IS NOT NULL AND raw.away_team IS NOT NULL
     """)
     
@@ -215,7 +215,7 @@ def update_event_mappings(con: duckdb.DuckDBPyConnection):
         (h.abbr = g.away_team AND a.abbr = g.home_team)
     LEFT JOIN dim_events_mapping em ON raw.event_id_vendor = em.vendor_event_id AND raw.source_vendor = em.source_vendor
     WHERE em.vendor_event_id IS NULL
-      AND ABS(DATEDIFF('day', CAST(raw.capture_ts_utc AS DATE), CAST(g.game_date AS DATE))) <= 1
+      AND ABS(DATEDIFF('day', CAST(COALESCE(raw.event_start_time_utc, raw.capture_ts_utc) AS DATE), CAST(g.game_date AS DATE))) <= 1
     """)
     
     res = con.execute("SELECT count(*) FROM dim_events_mapping").fetchone()

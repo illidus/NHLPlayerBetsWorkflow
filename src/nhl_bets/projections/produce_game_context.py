@@ -27,7 +27,56 @@ OUTPUT_PATH = os.path.join(project_root, 'outputs', 'projections', 'GameContext.
 def get_db_connection():
     return duckdb.connect(DB_PATH)
 
+def load_schedule_from_duckdb(con):
+    """
+    Loads upcoming schedule from fact_prop_odds in DuckDB.
+    """
+    query = """
+    SELECT DISTINCT event_name_raw as Game, event_start_time_utc::DATE as Game_Date
+    FROM fact_prop_odds
+    WHERE event_start_time_utc >= CURRENT_DATE - INTERVAL '1 day'
+    """
+    df = con.execute(query).df()
+    if df.empty:
+        return None, None
+        
+    # Parse matchups
+    matchups = []
+    for _, row in df.iterrows():
+        # event_name_raw is usually "Away @ Home" or similar
+        # We use a helper or simple split
+        game_str = row['Game']
+        date_str = str(row['Game_Date'])
+        
+        # Try split by ' @ ' or ' vs '
+        for sep in [' @ ', ' vs ', ' at ']:
+            if sep in game_str:
+                parts = game_str.split(sep)
+                if len(parts) == 2:
+                    away = parts[0].strip()
+                    home = parts[1].strip()
+                    # Add both perspectives
+                    matchups.append({'Team': away, 'OppTeam': home, 'Date': date_str, 'IsHome': False})
+                    matchups.append({'Team': home, 'OppTeam': away, 'Date': date_str, 'IsHome': True})
+                    break
+                    
+    if not matchups:
+        return None, None
+        
+    return pd.DataFrame(matchups), df['Game_Date'].max()
+
 def load_schedule_from_props():
+    con = get_db_connection()
+    try:
+        df, date = load_schedule_from_duckdb(con)
+        if df is not None and not df.empty:
+            print("Loaded schedule from DuckDB fact_prop_odds.")
+            return df, date
+    except Exception as e:
+        print(f"Failed to load schedule from DuckDB: {e}")
+    finally:
+        con.close()
+
     if not os.path.exists(PROPS_PATH):
         print(f"Props file not found: {PROPS_PATH}")
         return None, None
@@ -155,8 +204,9 @@ def main():
         print("No schedule found. Exiting.")
         sys.exit(1)
         
-    print(f"Target Game Date: {game_date}")
-    
+    if not isinstance(game_date, str):
+        game_date = game_date.strftime("%Y-%m-%d")
+        
     # 2. Load Base Projections (to get list of players)
     if not os.path.exists(BASE_PROJ_PATH):
         print("Base projections not found.")

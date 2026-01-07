@@ -25,6 +25,32 @@
       "book_name": "Underdog Fantasy",
       "market_source_id": 73,
       "expected_american_odds": 151
+    },
+    {
+      "label": "Thomas Harley Blocks Over 2.5 (DraftKings)",
+      "vendor_event_id": 104502,
+      "vendor_person_id": 43984,
+      "player_name": "Thomas Harley",
+      "market": "BLOCKS",
+      "bet_type_id": 88,
+      "line": 2.5,
+      "side": "OVER",
+      "book_name": "DraftKings",
+      "market_source_id": 1,
+      "expected_american_odds": 140
+    },
+    {
+      "label": "Shayne Gostisbehere Points Under 0.5 (Underdog Fantasy)",
+      "vendor_event_id": 104502,
+      "vendor_person_id": 44070,
+      "player_name": "Shayne Gostisbehere",
+      "market": "POINTS",
+      "bet_type_id": 70,
+      "line": 0.5,
+      "side": "UNDER",
+      "book_name": "Underdog Fantasy",
+      "market_source_id": 73,
+      "expected_american_odds": -143
     }
   ]
 }

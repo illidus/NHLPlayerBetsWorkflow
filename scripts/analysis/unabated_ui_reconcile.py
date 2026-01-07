@@ -53,6 +53,13 @@ def american_to_decimal(american: int) -> float:
     return None
 
 
+def format_db_timestamp_utc(value) -> str:
+    if value is None or pd.isna(value):
+        return None
+    ts = pd.to_datetime(value, utc=True)
+    return ts.isoformat()
+
+
 def reverse_bet_type_map():
     return {v: k for k, v in UnabatedClient.BET_TYPE_MAP.items()}
 
@@ -185,8 +192,16 @@ def reconcile_example(example: dict, raw_data: dict, con: duckdb.DuckDBPyConnect
     }
     query, params = build_db_query(query_filters)
     db_rows = con.execute(query, params).df()
-    if not db_rows.empty and "book_name_raw" in db_rows.columns:
-        db_rows["book_type"] = db_rows["book_name_raw"].apply(classify_book_type)
+    if not db_rows.empty:
+        if "book_name_raw" in db_rows.columns:
+            db_rows["book_type"] = db_rows["book_name_raw"].apply(classify_book_type)
+        if "event_start_time_utc" in db_rows.columns:
+            db_rows["event_start_time_utc_raw"] = db_rows["event_start_time_utc"].apply(
+                lambda v: None if v is None or pd.isna(v) else str(v)
+            )
+            db_rows["event_start_time_utc_utc"] = db_rows["event_start_time_utc"].apply(
+                format_db_timestamp_utc
+            )
 
     checks = []
     if expected_american is not None and not raw_df.empty:
@@ -224,8 +239,11 @@ def reconcile_example(example: dict, raw_data: dict, con: duckdb.DuckDBPyConnect
         checks.append({
             "check": "event_start_time_utc",
             "expected": raw_start,
-            "actual": db_start.isoformat() if pd.notnull(db_start) else None,
-            "pass": raw_start is None or (db_start is not None and raw_start.startswith(db_start.isoformat()[:19]))
+            "actual": format_db_timestamp_utc(db_start) if pd.notnull(db_start) else None,
+            "pass": raw_start is None or (
+                db_start is not None
+                and raw_start.startswith(format_db_timestamp_utc(db_start)[:19])
+            )
         })
 
     return {

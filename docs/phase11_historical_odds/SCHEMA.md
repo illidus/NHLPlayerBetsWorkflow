@@ -10,7 +10,7 @@
 | `source_vendor` | TEXT | PLAYNOW, UNABATED, ODDSSHARK |
 | `capture_ts_utc` | TIMESTAMP | Time of data capture |
 | `event_id_vendor` | TEXT | Vendor's unique ID for the game |
-| `event_start_ts_utc` | TIMESTAMP | Scheduled start time (nullable) |
+| `event_start_time_utc` | TIMESTAMP | Scheduled start time (nullable) |
 | `player_id_vendor` | TEXT | Vendor's unique ID for the player (nullable) |
 | `player_name_raw` | TEXT | Player name as it appeared at the source |
 | `market_type` | TEXT | GOALS, ASSISTS, POINTS, SOG, BLOCKS |

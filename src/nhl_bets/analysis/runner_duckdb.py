@@ -4,6 +4,7 @@ import duckdb
 import os
 import sys
 import logging
+import math
 from datetime import datetime, timezone, timedelta
 
 # Ensure project root is in path
@@ -13,7 +14,7 @@ if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
 from nhl_bets.analysis.normalize import normalize_name, get_mapped_odds
-from nhl_bets.projections.config import get_production_prob_column, ALPHAS, MARKET_POLICY
+from nhl_bets.projections.config import get_production_prob_column, ALPHAS, MARKET_POLICY, BETAS, LG_SA60, LG_XGA60, ITT_BASE
 
 from nhl_bets.common.db_init import get_db_connection, DEFAULT_DB_PATH, initialize_phase11_tables
 
@@ -24,6 +25,447 @@ logger = logging.getLogger(__name__)
 DB_PATH = DEFAULT_DB_PATH
 PROBS_PATH = 'outputs/projections/SingleGamePropProbabilities.csv'
 OUTPUT_XLSX = 'outputs/ev_analysis/MultiBookBestBets.xlsx'
+
+def _poisson_p_over(mu, line_int):
+    if mu is None or line_int is None:
+        return None
+    try:
+        mu = float(mu)
+        line_int = int(line_int)
+    except Exception:
+        return None
+    if line_int <= 0:
+        return 1.0
+    exp_term = math.exp(-mu)
+    cumulative = 0.0
+    for k in range(0, line_int):
+        cumulative += (mu ** k) / math.factorial(k)
+    return 1.0 - (exp_term * cumulative)
+
+def _line_to_int(line):
+    try:
+        line = float(line)
+    except Exception:
+        return None
+    if abs(line - 0.5) < 1e-6:
+        return 1
+    if abs(line - 1.5) < 1e-6:
+        return 2
+    if abs(line - 2.5) < 1e-6:
+        return 3
+    return None
+
+def _nbinom_p_over(mu, alpha, line_int):
+    if mu is None or alpha is None or line_int is None:
+        return None
+    try:
+        mu = float(mu)
+        alpha = float(alpha)
+        line_int = int(line_int)
+    except Exception:
+        return None
+    if mu <= 0 or alpha <= 0:
+        return None
+    if line_int <= 0:
+        return 1.0
+    # NB parameterization: variance = mu + alpha * mu^2
+    r = 1.0 / alpha
+    p = r / (r + mu)
+    # cumulative sum of pmf up to line_int - 1
+    cumulative = 0.0
+    pmf = p ** r
+    cumulative += pmf
+    for k in range(1, line_int):
+        pmf = pmf * (1 - p) * (r + k - 1) / k
+        cumulative += pmf
+    return 1.0 - cumulative
+
+def write_ev_forensics_report(df_results, df_eligible, df_filtered, run_start_ts, prob_snapshot_ts_str,
+                              freshness_window, grace_minutes, excluded_keywords, report_dir="outputs/monitoring"):
+    """
+    Generates an EV forensics report aligned to the current BestBets run.
+    Diagnostic only; does not change production outputs.
+    """
+    os.makedirs(report_dir, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime('%Y-%m-%d_%H%M%SZ')
+    report_path = os.path.join(report_dir, f"ev_forensics_top50_aligned_asof_{ts}.md")
+
+    # Use filtered if available, else eligible
+    top_source = df_filtered if not df_filtered.empty else df_eligible
+    top50 = top_source.sort_values('EV%', ascending=False).head(50).copy() if not top_source.empty else pd.DataFrame()
+
+    # Step 2 line alignment (supported lines only)
+    if not top50.empty:
+        top50['line_status'] = top50.apply(
+            lambda r: 'LINE_MATCH' if _line_to_int(r['Line']) in (1, 2, 3)
+            else 'LINE_MISMATCH', axis=1
+        )
+        line_status_counts = top50['line_status'].value_counts().reset_index()
+        line_status_counts.columns = ['line_status', 'count']
+    else:
+        line_status_counts = pd.DataFrame()
+
+    # Step 3 tail sanity: recompute p_over from mu for Poisson/NB markets
+    if not top50.empty and 'mu' in top50.columns and 'distribution' in top50.columns:
+        top50['line_int'] = top50['Line'].apply(_line_to_int)
+        top50['p_over_selected'] = top50.apply(
+            lambda r: r['Model_Prob'] if str(r['Side']).upper() == 'OVER' else (1.0 - r['Model_Prob']), axis=1
+        )
+        def recompute_p_over(row):
+            dist = str(row.get('distribution') or '').lower()
+            if dist == 'poisson':
+                return _poisson_p_over(row.get('mu'), row.get('line_int'))
+            if dist == 'negative binomial':
+                return _nbinom_p_over(row.get('mu'), row.get('alpha'), row.get('line_int'))
+            return None
+        top50['p_over_recalc'] = top50.apply(recompute_p_over, axis=1)
+        top50['abs_dev'] = (top50['p_over_selected'] - top50['p_over_recalc']).abs()
+        max_dev = top50['abs_dev'].max()
+        max_dev_rows = top50.sort_values('abs_dev', ascending=False).head(5)[
+            ['Player', 'Market', 'Line', 'Side', 'p_over_selected', 'p_over_recalc', 'abs_dev', 'mu', 'line_int', 'distribution', 'alpha']
+        ]
+    else:
+        max_dev = None
+        max_dev_rows = pd.DataFrame()
+
+    # Step 4 calibration plateau: bucket p_over_selected
+    if not top50.empty:
+        top50['p_over_bucket'] = top50.apply(
+            lambda r: round(r['Model_Prob'], 6) if str(r['Side']).upper() == 'OVER' else round(1.0 - r['Model_Prob'], 6),
+            axis=1
+        )
+        plateau_counts = top50.groupby('p_over_bucket', dropna=True).agg(
+            count=('p_over_bucket', 'size'),
+            avg_ev=('EV%', 'mean')
+        ).reset_index().sort_values('count', ascending=False)
+    else:
+        plateau_counts = pd.DataFrame()
+
+    # Step 5 book dispersion (eligible data)
+    if not df_eligible.empty:
+        df_eligible['prop_key'] = df_eligible.apply(
+            lambda r: f"{r['Player']}|{r['Market']}|{r['Line']}|{r['Side']}|{r.get('event_start_time_utc')}", axis=1
+        )
+        disp = df_eligible.groupby('prop_key').agg(
+            book_count=('Book', 'nunique'),
+            implied_min=('Implied_Prob', 'min'),
+            implied_max=('Implied_Prob', 'max'),
+            implied_median=('Implied_Prob', 'median')
+        ).reset_index()
+        top50['prop_key'] = top50.apply(
+            lambda r: f"{r['Player']}|{r['Market']}|{r['Line']}|{r['Side']}|{r.get('event_start_time_utc')}", axis=1
+        ) if not top50.empty else None
+        top50_disp = top50.merge(disp, on='prop_key', how='left') if not top50.empty else pd.DataFrame()
+        if not top50_disp.empty:
+            top50_disp['outlier_flag'] = (top50_disp['book_count'] >= 3) & (
+                (top50_disp['Implied_Prob'] - top50_disp['implied_median']).abs() >= 0.08
+            )
+            outlier_examples = top50_disp[top50_disp['outlier_flag']].head(10)[
+                ['Player', 'Market', 'Line', 'Side', 'Book', 'Implied_Prob', 'implied_median', 'book_count']
+            ]
+        else:
+            outlier_examples = pd.DataFrame()
+    else:
+        outlier_examples = pd.DataFrame()
+
+    # Format top50 for output
+    if not top50.empty:
+        format_df = top50.copy()
+        format_df['Model_Prob'] = format_df['Model_Prob'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else '')
+        format_df['Implied_Prob'] = format_df['Implied_Prob'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else '')
+        format_df['EV%'] = format_df['EV%'].apply(lambda x: f"{x:+.4f}" if pd.notna(x) else '')
+        format_df['Odds'] = format_df['Odds'].apply(lambda x: f"{int(x)}" if pd.notna(x) else '')
+    else:
+        format_df = pd.DataFrame()
+
+    # Trace section: Top 10 bets with full data lineage
+    if not top50.empty:
+        trace_df = top50.copy().head(10)
+        trace_df['p_over_raw'] = trace_df['p_over_raw'].apply(lambda x: f"{x:.6f}" if pd.notna(x) else '')
+        trace_df['p_over_calibrated'] = trace_df['p_over_calibrated'].apply(lambda x: f"{x:.6f}" if pd.notna(x) else '')
+        trace_df['p_over_selected'] = trace_df['p_over_selected'].apply(lambda x: f"{x:.6f}" if pd.notna(x) else '')
+        trace_df['Model_Prob'] = trace_df['Model_Prob'].apply(lambda x: f"{x:.6f}" if pd.notna(x) else '')
+        trace_df['Implied_Prob'] = trace_df['Implied_Prob'].apply(lambda x: f"{x:.6f}" if pd.notna(x) else '')
+        trace_df['EV%'] = trace_df['EV%'].apply(lambda x: f"{x:+.6f}" if pd.notna(x) else '')
+        if 'freshness_minutes' in trace_df.columns:
+            trace_df['freshness_minutes'] = trace_df['freshness_minutes'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else '')
+        else:
+            trace_df['freshness_minutes'] = ''
+        if 'event_time_delta_minutes' in trace_df.columns:
+            trace_df['event_time_delta_minutes'] = trace_df['event_time_delta_minutes'].apply(lambda x: f"{x:.2f}" if pd.notna(x) else '')
+        else:
+            trace_df['event_time_delta_minutes'] = ''
+    else:
+        trace_df = pd.DataFrame()
+
+    # Projection inputs (BaseSingleGameProjections + GameContext)
+    base_proj_path = os.path.join('outputs', 'projections', 'BaseSingleGameProjections.csv')
+    context_path = os.path.join('outputs', 'projections', 'GameContext.csv')
+    base_df = pd.DataFrame()
+    context_df = pd.DataFrame()
+    if os.path.exists(base_proj_path):
+        try:
+            base_df = pd.read_csv(base_proj_path)
+        except Exception:
+            base_df = pd.DataFrame()
+    if os.path.exists(context_path):
+        try:
+            context_df = pd.read_csv(context_path)
+        except Exception:
+            context_df = pd.DataFrame()
+
+    proj_trace_df = pd.DataFrame()
+    if not trace_df.empty and not base_df.empty and 'Player' in base_df.columns:
+        proj_trace_df = trace_df.merge(base_df, on='Player', how='left', suffixes=('', '_base'))
+        if not context_df.empty and 'Player' in context_df.columns:
+            proj_trace_df = proj_trace_df.merge(context_df, on='Player', how='left', suffixes=('', '_ctx'))
+    # Math breakdown based on projection inputs (top 10)
+    breakdown_df = pd.DataFrame()
+    if not proj_trace_df.empty:
+        def is_valid(val):
+            return val is not None and not (isinstance(val, float) and np.isnan(val)) and not pd.isna(val)
+
+        def clamp(val, lo, hi):
+            return max(lo, min(hi, val))
+
+        def compute_row(r):
+            base_toi = r.get('TOI', 15.0)
+            if not is_valid(base_toi) or base_toi == 0:
+                base_toi = 15.0
+            proj_toi = r.get('proj_toi', None)
+            if not is_valid(proj_toi):
+                proj_toi = base_toi
+            toi_factor = (proj_toi / base_toi) if base_toi > 0 else 1.0
+
+            mult_opp_sog = 1.0
+            mult_opp_g = 1.0
+            mult_goalie = 1.0
+            mult_itt = 1.0
+            mult_b2b = 1.0
+
+            opp_sa60 = r.get('opp_sa60', None)
+            if is_valid(opp_sa60) and LG_SA60 > 0:
+                mult_opp_sog = (opp_sa60 / LG_SA60) ** BETAS['opp_sog']
+
+            opp_xga60 = r.get('opp_xga60', None)
+            if is_valid(opp_xga60) and LG_XGA60 > 0:
+                mult_opp_g = (opp_xga60 / LG_XGA60) ** BETAS['opp_g']
+
+            goalie_gsax60 = r.get('goalie_gsax60', None)
+            goalie_xga60 = r.get('goalie_xga60', None)
+            if is_valid(goalie_gsax60) and is_valid(goalie_xga60) and goalie_xga60 > 0:
+                raw_m = max(0.1, 1 - (goalie_gsax60 / goalie_xga60))
+                mult_goalie = clamp(raw_m ** BETAS['goalie'], 0.5, 1.5)
+
+            itt = r.get('implied_team_total', None)
+            if is_valid(itt) and ITT_BASE > 0:
+                mult_itt = (itt / ITT_BASE) ** BETAS['itt']
+
+            is_b2b = r.get('is_b2b', None)
+            if is_valid(is_b2b) and is_b2b in [1, '1', True]:
+                mult_b2b = np.exp(BETAS['b2b'])
+
+            scoring_mult = mult_opp_g * mult_goalie * mult_itt * mult_b2b
+            opp_sog_mult = mult_opp_sog * mult_b2b
+
+            market = str(r.get('Market', '')).upper()
+            base_stat = None
+            base_stat_source = ''
+            mu_adj_calc = None
+
+            if market == 'GOALS':
+                base_stat = r.get('G', None)
+                base_stat_source = 'G'
+                if is_valid(base_stat):
+                    mu_adj_calc = base_stat * scoring_mult * toi_factor
+            elif market == 'ASSISTS':
+                base_stat = r.get('A', None)
+                base_stat_source = 'A'
+                if is_valid(base_stat):
+                    mu_adj_calc = base_stat * scoring_mult * toi_factor
+            elif market == 'POINTS':
+                base_stat = r.get('PTS', None)
+                base_stat_source = 'PTS'
+                if is_valid(base_stat):
+                    mu_adj_calc = base_stat * scoring_mult * toi_factor
+            elif market == 'SOG':
+                corsi_60 = r.get('corsi_per_60_L20', None)
+                thru_pct = r.get('thru_pct_L40', None)
+                if is_valid(corsi_60) and is_valid(thru_pct):
+                    base_stat = (corsi_60 * thru_pct) * (proj_toi / 60.0)
+                    base_stat_source = 'corsi_per_60_L20*thru_pct_L40'
+                else:
+                    base_stat = r.get('SOG', None)
+                    base_stat_source = 'SOG'
+                if is_valid(base_stat):
+                    mu_adj_calc = base_stat * opp_sog_mult * toi_factor
+            elif market == 'BLOCKS':
+                base_stat = r.get('BLK', None)
+                base_stat_source = 'BLK'
+                if is_valid(base_stat):
+                    mu_adj_calc = base_stat * opp_sog_mult * toi_factor
+
+            p_over_recalc = None
+            line_int = _line_to_int(r.get('Line', None))
+            if is_valid(mu_adj_calc) and is_valid(line_int):
+                dist = str(r.get('distribution') or '').lower()
+                if dist == 'poisson':
+                    p_over_recalc = _poisson_p_over(mu_adj_calc, line_int)
+                elif dist == 'negative binomial':
+                    p_over_recalc = _nbinom_p_over(mu_adj_calc, r.get('alpha', None), line_int)
+
+            return pd.Series({
+                'base_stat_source': base_stat_source,
+                'base_stat_value': base_stat,
+                'proj_toi_used': proj_toi,
+                'base_toi_used': base_toi,
+                'toi_factor': toi_factor,
+                'mult_opp_sog': mult_opp_sog,
+                'mult_opp_g': mult_opp_g,
+                'mult_goalie': mult_goalie,
+                'mult_itt': mult_itt,
+                'mult_b2b': mult_b2b,
+                'scoring_mult': scoring_mult,
+                'opp_sog_mult': opp_sog_mult,
+                'mu_adj_calc': mu_adj_calc,
+                'p_over_recalc': p_over_recalc
+            })
+
+        breakdown_df = proj_trace_df.apply(compute_row, axis=1)
+        breakdown_df = pd.concat([proj_trace_df, breakdown_df], axis=1)
+
+    cols = [
+        'Player', 'Market', 'Line', 'Side', 'Model_Prob', 'Prob_Source',
+        'Book', 'Odds', 'Implied_Prob', 'EV%', 'capture_ts_utc', 'event_start_time_utc'
+    ]
+
+    with open(report_path, 'w', encoding='ascii') as f:
+        f.write('# EV Forensics Top 50 (All Markets) - Production Filters (As-Of BestBets Run)\n\n')
+        f.write(f'Report timestamp (UTC): {ts}\n\n')
+        f.write(f'- As-of run_start_ts: {run_start_ts.isoformat()}\n')
+        f.write(f"- DFS/Pick'em excluded keywords: {', '.join(excluded_keywords)}\n")
+        f.write(f'- Freshness window: {freshness_window} minutes\n')
+        f.write(f'- Event grace minutes: {grace_minutes}\n')
+        f.write(f'- Prob snapshot ts: {prob_snapshot_ts_str}\n\n')
+
+        f.write('## Pipeline Trace Overview\n\n')
+        f.write('Projection pipeline (raw model values):\n')
+        f.write('1) Base projections from DuckDB features -> outputs/projections/BaseSingleGameProjections.csv\n')
+        f.write('2) Context inputs (opponent/goalie/usage) -> outputs/projections/GameContext.csv\n')
+        f.write('3) Mu + raw probabilities computed in src/nhl_bets/projections/single_game_probs.py\n')
+        f.write('4) Raw + calibrated outputs -> outputs/projections/SingleGamePropProbabilities.csv\n\n')
+        f.write('EV pipeline (odds + model):\n')
+        f.write('1) Odds source (fact_prop_odds) -> normalized join on Player name\n')
+        f.write('2) Probability selection via MARKET_POLICY and line-specific column choice\n')
+        f.write('3) Side adjustment (OVER uses p_over; UNDER uses 1 - p_over)\n')
+        f.write('4) Implied probability from decimal odds\n')
+        f.write('5) EV% = (Model_Prob * odds_decimal) - 1\n')
+        f.write('6) Freshness gating vs prob snapshot\n')
+        f.write('7) Event eligibility (not started, not live, has start time)\n')
+        f.write('8) EV% threshold and dedup (latest capture_ts)\n\n')
+
+        f.write('## Step 1 - High-EV Triage (Top 50)\n\n')
+        if format_df.empty:
+            f.write('No eligible bets after production filters.\n\n')
+        else:
+            f.write(format_df[cols].to_markdown(index=False))
+            f.write('\n\n')
+
+        f.write('## Full Trace (Top 10 Bets)\n\n')
+        if trace_df.empty:
+            f.write('No rows available for full trace.\n\n')
+        else:
+            trace_cols = [
+                'Player', 'Market', 'Line', 'Side', 'Book', 'source_vendor', 'capture_ts_utc',
+                'event_start_time_utc', 'Odds', 'Implied_Prob', 'Source_Col', 'p_over_raw',
+                'p_over_calibrated', 'p_over_selected', 'Model_Prob', 'EV%', 'mu_adj_col', 'mu_adj_value',
+                'distribution', 'alpha', 'freshness_minutes', 'event_time_delta_minutes', 'is_live',
+                'prob_snapshot_ts'
+            ]
+            for col in trace_cols:
+                if col not in trace_df.columns:
+                    trace_df[col] = ''
+            f.write(trace_df[trace_cols].to_markdown(index=False))
+            f.write('\n\n')
+
+        f.write('## SingleGamePropProbabilities Values (Top 10 Bets)\n\n')
+        if trace_df.empty:
+            f.write('No rows available for SingleGamePropProbabilities examples.\n\n')
+        else:
+            sg_cols = [
+                'Player', 'Market', 'Line', 'Source_Col', 'p_over_raw', 'p_over_calibrated',
+                'p_over_selected', 'mu_adj_col', 'mu_adj_value', 'prob_snapshot_ts'
+            ]
+            for col in sg_cols:
+                if col not in trace_df.columns:
+                    trace_df[col] = ''
+            f.write(trace_df[sg_cols].to_markdown(index=False))
+            f.write('\n\n')
+
+        f.write('## Math Breakdown (Top 10 Bets)\n\n')
+        if breakdown_df.empty:
+            f.write('Math breakdown not available (projection inputs missing).\n\n')
+        else:
+            breakdown_cols = [
+                'Player', 'Market', 'Line', 'base_stat_source', 'base_stat_value', 'base_toi_used',
+                'proj_toi_used', 'toi_factor', 'mult_opp_sog', 'mult_opp_g', 'mult_goalie', 'mult_itt',
+                'mult_b2b', 'scoring_mult', 'opp_sog_mult', 'mu_adj_calc', 'mu_adj_value', 'p_over_raw',
+                'p_over_recalc'
+            ]
+            for col in breakdown_cols:
+                if col not in breakdown_df.columns:
+                    breakdown_df[col] = ''
+            f.write(breakdown_df[breakdown_cols].to_markdown(index=False))
+            f.write('\n\n')
+
+        f.write('## Projection Inputs (Top 10 Bets)\n\n')
+        if proj_trace_df.empty:
+            f.write('Projection inputs not available (BaseSingleGameProjections.csv or GameContext.csv missing).\n\n')
+        else:
+            proj_cols = [
+                'Player', 'Team', 'OppTeam', 'GP', 'TOI', 'PPTOI',
+                'G', 'A', 'PTS', 'SOG', 'BLK', 'notes',
+                'opp_sa60', 'opp_xga60', 'goalie_gsax60', 'goalie_xga60',
+                'implied_team_total', 'is_b2b', 'proj_toi', 'proj_pp_toi'
+            ]
+            for col in proj_cols:
+                if col not in proj_trace_df.columns:
+                    proj_trace_df[col] = ''
+            f.write(proj_trace_df[proj_cols].to_markdown(index=False))
+            f.write('\n\n')
+
+        f.write('## Step 2 - Line & Side Alignment Check\n\n')
+        if line_status_counts.empty:
+            f.write('No rows to evaluate for line alignment.\n\n')
+        else:
+            f.write(line_status_counts.to_markdown(index=False))
+            f.write('\n\n')
+
+        f.write('## Step 3 - Tail Probability Sanity (Poisson Recalc)\n\n')
+        if max_dev is not None and not pd.isna(max_dev):
+            f.write(f"Max abs deviation vs recomputed Poisson tail: {max_dev:.6f}\n\n")
+            if not max_dev_rows.empty:
+                f.write(max_dev_rows.to_markdown(index=False))
+                f.write('\n\n')
+        else:
+            f.write('No rows to evaluate for tail sanity.\n\n')
+
+        f.write('## Step 4 - Calibration Plateau Audit\n\n')
+        if not plateau_counts.empty:
+            f.write(plateau_counts.head(10).to_markdown(index=False))
+            f.write('\n\n')
+        else:
+            f.write('No calibrated probabilities found in top50 sample.\n\n')
+
+        f.write('## Step 5 - Book Dispersion Lens\n\n')
+        f.write('Outlier heuristic: book_count >= 3 and |implied_prob - median| >= 0.08\n\n')
+        if not outlier_examples.empty:
+            f.write(outlier_examples.to_markdown(index=False))
+            f.write('\n\n')
+        else:
+            f.write('No outlier books flagged in top50 sample under heuristic.\n\n')
+
+    return report_path
 
 def parse_exclusion_list(env_key, default_list=None):
     raw = os.environ.get(env_key, "").strip()
@@ -214,6 +656,14 @@ def main():
                 continue
                 
             p_over_model = float(row[prob_col])
+            raw_col = prob_col.replace('_calibrated', '')
+            p_over_raw = row.get(raw_col) if raw_col in row else None
+            if 'calibrated' in prob_col:
+                p_over_calibrated = row.get(prob_col)
+            else:
+                alt_cal_col = f"{prob_col}_calibrated"
+                p_over_calibrated = row.get(alt_cal_col) if alt_cal_col in row else None
+            p_over_selected = p_over_model
             
             # Adjust for side
             if row['side'].upper() == 'OVER':
@@ -252,6 +702,9 @@ def main():
                 'ev_sort': ev,
                 'Prob_Source': 'Calibrated' if is_calibrated else 'Raw',
                 'Source_Col': prob_col,
+                'p_over_raw': p_over_raw,
+                'p_over_calibrated': p_over_calibrated,
+                'p_over_selected': p_over_selected,
                 # New Provenance Columns
                 'source_vendor': row.get('source_vendor', 'UNKNOWN'),
                 'capture_ts_utc': row.get('capture_ts_utc'),
@@ -260,6 +713,8 @@ def main():
                 'away_team': row.get('away_team'),
                 'is_live': row.get('is_live', False),
                 'raw_payload_hash': row.get('raw_payload_hash', ''),
+                'mu_adj_col': mu_col,
+                'mu_adj_value': mu_val,
                 'mu': mu_val,
                 'distribution': dist_name,
                 'alpha': alpha_val if alpha_val is not None else '',
@@ -437,6 +892,22 @@ def main():
                 pass # Columns might be missing if empty df
             
     logger.info(f"Exported best bets to {OUTPUT_XLSX}")
+
+    # Forensics report aligned to this run (ASSISTS/POINTS only)
+    try:
+        report_path = write_ev_forensics_report(
+            df_results=df_results,
+            df_eligible=df_eligible,
+            df_filtered=df_filtered,
+            run_start_ts=run_start_ts,
+            prob_snapshot_ts_str=prob_snapshot_ts_str,
+            freshness_window=freshness_window,
+            grace_minutes=grace_minutes,
+            excluded_keywords=excluded_keywords
+        )
+        logger.info(f"Exported EV forensics report to {report_path}")
+    except Exception as e:
+        logger.warning(f"Could not generate EV forensics report: {e}")
     
     # Print Top 10
     print("\n--- TOP 10 MULTI-BOOK BEST BETS ---")

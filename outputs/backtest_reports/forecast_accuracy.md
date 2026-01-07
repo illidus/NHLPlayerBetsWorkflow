@@ -1,6 +1,6 @@
 # Model Forecast Accuracy Report
 
-Generated on: 2026-01-05 13:27:43
+Generated on: 2026-01-06 23:04:00
 
 ## Model Metadata
 - **Logic Version:** v2.1-l40-corsi
@@ -34,9 +34,9 @@ Probability Clamp: `1e-15` to `1 - 1e-15`
 #### Spot Check (3 Rows)
 | y | p | Model LL Contrib | Base LL Contrib |
 |:--|:--|:-----------------|:----------------|
-| 0 | 0.306672 | 0.366252 | 0.271085 |
-| 0 | 0.159166 | 0.173362 | 0.271085 |
-| 0 | 0.160885 | 0.175407 | 0.271085 |
+| 0 | 0.000001 | 0.000001 | 0.271085 |
+| 0 | 0.000001 | 0.000001 | 0.271085 |
+| 0 | 0.339263 | 0.414399 | 0.271085 |
 
 ### BLOCKS Validation
 - **Empirical Base Rate (p_base)**: `0.196997`
@@ -46,9 +46,9 @@ Probability Clamp: `1e-15` to `1 - 1e-15`
 #### Spot Check (3 Rows)
 | y | p | Model LL Contrib | Base LL Contrib |
 |:--|:--|:-----------------|:----------------|
-| 0 | 0.253331 | 0.292134 | 0.219397 |
-| 1 | 0.222349 | 1.503509 | 1.624568 |
-| 0 | 0.049333 | 0.050592 | 0.219397 |
+| 0 | 0.000001 | 0.000001 | 0.219397 |
+| 0 | 0.000001 | 0.000001 | 0.219397 |
+| 0 | 0.024206 | 0.024504 | 0.219397 |
 
 ### GOALS Validation
 - **Empirical Base Rate (p_base)**: `0.149946`
@@ -58,9 +58,9 @@ Probability Clamp: `1e-15` to `1 - 1e-15`
 #### Spot Check (3 Rows)
 | y | p | Model LL Contrib | Base LL Contrib |
 |:--|:--|:-----------------|:----------------|
-| 0 | 0.083903 | 0.087634 | 0.162455 |
-| 0 | 0.229113 | 0.260214 | 0.162455 |
-| 0 | 0.034474 | 0.035082 | 0.162455 |
+| 0 | 0.000001 | 0.000001 | 0.162455 |
+| 0 | 0.241157 | 0.275961 | 0.162455 |
+| 0 | 0.143273 | 0.154636 | 0.162455 |
 
 ### POINTS Validation
 - **Empirical Base Rate (p_base)**: `0.343861`
@@ -70,9 +70,9 @@ Probability Clamp: `1e-15` to `1 - 1e-15`
 #### Spot Check (3 Rows)
 | y | p | Model LL Contrib | Base LL Contrib |
 |:--|:--|:-----------------|:----------------|
-| 0 | 0.306672 | 0.366252 | 0.421383 |
-| 0 | 0.343168 | 0.420327 | 0.421383 |
-| 0 | 0.208540 | 0.233876 | 0.421383 |
+| 0 | 0.000001 | 0.000001 | 0.421383 |
+| 0 | 0.000001 | 0.000001 | 0.421383 |
+| 0 | 0.446780 | 0.591999 | 0.421383 |
 
 ### SOG Validation
 - **Empirical Base Rate (p_base)**: `0.252646`
@@ -82,9 +82,9 @@ Probability Clamp: `1e-15` to `1 - 1e-15`
 #### Spot Check (3 Rows)
 | y | p | Model LL Contrib | Base LL Contrib |
 |:--|:--|:-----------------|:----------------|
-| 0 | 0.331004 | 0.401977 | 0.291217 |
-| 0 | 0.245315 | 0.281454 | 0.291217 |
-| 0 | 0.215352 | 0.242520 | 0.291217 |
+| 1 | 0.000001 | 13.815511 | 1.375765 |
+| 0 | 0.000001 | 0.000001 | 0.291217 |
+| 1 | 0.295575 | 1.218833 | 1.375765 |
 
 ## Slate Definition
   - **ASSISTS**: 1185 slates, average 255.8 candidates per slate.
@@ -110,9 +110,9 @@ Comparison of metrics before and after applying chronological post-hoc calibrato
 | Market   | Variant    |   Log Loss |   Log Loss Improvement |         ECE |   Top-5 Hit Rate |   Top-10 Hit Rate |
 |:---------|:-----------|-----------:|-----------------------:|------------:|-----------------:|------------------:|
 | ASSISTS  | Raw        |   0.625096 |             -0.0769753 | 0.044313    |         0.498059 |          0.467426 |
-| ASSISTS  | Calibrated |   0.526287 |              0.0218343 | 0.000588894 |         0.500422 |          0.468439 |
+| ASSISTS  | Calibrated |   0.526287 |              0.0218343 | 0.000588894 |         0.500084 |          0.468101 |
 | POINTS   | Raw        |   0.675522 |             -0.0319589 | 0.0358573   |         0.677637 |          0.643966 |
-| POINTS   | Calibrated |   0.605584 |              0.0379791 | 0.00119301  |         0.678143 |          0.643966 |
+| POINTS   | Calibrated |   0.605584 |              0.0379791 | 0.00119301  |         0.678819 |          0.645063 |
 
 ## Low-Probability Mass Diagnostics
 Analysis of predictions with very low probabilities to detect numerical pathologies.
@@ -243,11 +243,11 @@ Analysis of predictions with very low probabilities to detect numerical patholog
 ### ASSISTS Calibration by PP Environment (Team PP xG Rate Quintiles)
 | Quintile   |    Avg P |   Actual |         Gap |
 |:-----------|---------:|---------:|------------:|
-| PP_Env_Q1  | 0.217912 | 0.210786 | -0.00712608 |
-| PP_Env_Q2  | 0.22289  | 0.227369 |  0.00447922 |
-| PP_Env_Q3  | 0.224782 | 0.240683 |  0.0159007  |
-| PP_Env_Q4  | 0.226265 | 0.24847  |  0.0222045  |
-| PP_Env_Q5  | 0.228714 | 0.259936 |  0.0312215  |
+| PP_Env_Q1  | 0.217027 | 0.209631 | -0.00739575 |
+| PP_Env_Q2  | 0.222811 | 0.227633 |  0.00482289 |
+| PP_Env_Q3  | 0.225258 | 0.241524 |  0.0162667  |
+| PP_Env_Q4  | 0.226923 | 0.248404 |  0.0214807  |
+| PP_Env_Q5  | 0.228546 | 0.260051 |  0.0315054  |
 
 ### POINTS Calibration by TOI Quintiles
 | Quintile   |    Avg P |   Actual |        Gap |
@@ -269,13 +269,13 @@ Analysis of predictions with very low probabilities to detect numerical patholog
 | PP_Q5   | 0.487531 | 0.534465 |  0.0469342  |
 
 ### POINTS Calibration by PP Environment (Team PP xG Rate Quintiles)
-| Quintile   |    Avg P |   Actual |         Gap |
-|:-----------|---------:|---------:|------------:|
-| PP_Env_Q1  | 0.316613 | 0.310694 | -0.00591896 |
-| PP_Env_Q2  | 0.322569 | 0.333597 |  0.011028   |
-| PP_Env_Q3  | 0.325123 | 0.347356 |  0.0222328  |
-| PP_Env_Q4  | 0.326598 | 0.356578 |  0.0299809  |
-| PP_Env_Q5  | 0.329489 | 0.37108  |  0.0415912  |
+| Quintile   |    Avg P |   Actual |        Gap |
+|:-----------|---------:|---------:|-----------:|
+| PP_Env_Q1  | 0.315621 | 0.310166 | -0.0054555 |
+| PP_Env_Q2  | 0.322606 | 0.333845 |  0.011239  |
+| PP_Env_Q3  | 0.325473 | 0.347785 |  0.0223117 |
+| PP_Env_Q4  | 0.327436 | 0.357057 |  0.0296206 |
+| PP_Env_Q5  | 0.329255 | 0.370453 |  0.0411981 |
 
 ## Metric Definitions
 - **Brier Score**: Mean squared error of forecasts. Lower is better (0 to 1).

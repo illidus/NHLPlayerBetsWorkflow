@@ -80,7 +80,7 @@ Columns (minimum):
 - `source_vendor` (PLAYNOW | UNABATED | ODDSSHARK)
 - `capture_ts_utc` (TIMESTAMP)
 - `event_id_vendor` (TEXT)
-- `event_start_ts_utc` (TIMESTAMP, nullable)
+- `event_start_time_utc` (TIMESTAMP, nullable)
 - `player_id_vendor` (TEXT, nullable for HTML vendors)
 - `player_name_raw` (TEXT)
 - `market_type` (TEXT: GOALS, ASSISTS, POINTS, SOG, BLOCKS)

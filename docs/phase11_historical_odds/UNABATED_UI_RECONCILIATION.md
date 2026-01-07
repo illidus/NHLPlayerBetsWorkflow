@@ -96,3 +96,43 @@ Source snapshot: `outputs/odds/raw/UNABATED/2026/01/07/051429_unabated.json`
   - `player_team`: DAL
   - `book_name_raw`: Underdog Fantasy, `book_type`: DFS_FIXED_PAYOUT
   - `side`: OVER -> odds -189, UNDER -> odds +151
+
+### Example C: Thomas Harley Blocks 2.5 (DraftKings)
+- UI row: Thomas Harley, Blocked Shots, DAL @ CAR.
+- UI column: DraftKings (o2.5 +140 / u2.5 -182).
+- Raw payload:
+  - `eventId`: 104502
+  - `personId`: 43984
+  - `betTypeId`: 88 (BLOCKS)
+  - `points`: 2.5
+  - `sideKey`: `si0:pid43984` (OVER), `si1:pid43984` (UNDER)
+  - `marketSourceId`: 1 (DraftKings)
+  - `americanPrice`: +140 (OVER), -182 (UNDER)
+- DB (`fact_prop_odds`):
+  - `vendor_event_id`: 104502
+  - `vendor_person_id`: 43984
+  - `event_start_time_utc`: 2026-01-07T00:00:00
+  - `home_team`: CAR, `away_team`: DAL
+  - `player_team`: DAL
+  - `book_name_raw`: DraftKings, `book_type`: SPORTSBOOK
+  - `side`: OVER -> odds +140, UNDER -> odds -182
+
+### Example D: Shayne Gostisbehere Points 0.5 (Underdog Fantasy)
+- UI row: Shayne Gostisbehere, Points, DAL @ CAR.
+- UI column: Underdog Fantasy (DFS fixed-payout).
+- Raw payload:
+  - `eventId`: 104502
+  - `personId`: 44070
+  - `betTypeId`: 70 (POINTS)
+  - `points`: 0.5
+  - `sideKey`: `si0:pid44070` (OVER), `si1:pid44070` (UNDER)
+  - `marketSourceId`: 73 (Underdog Fantasy)
+  - `americanPrice`: +117 (OVER), -143 (UNDER)
+- DB (`fact_prop_odds`):
+  - `vendor_event_id`: 104502
+  - `vendor_person_id`: 44070
+  - `event_start_time_utc`: 2026-01-07T00:00:00
+  - `home_team`: CAR, `away_team`: DAL
+  - `player_team`: CAR
+  - `book_name_raw`: Underdog Fantasy, `book_type`: DFS_FIXED_PAYOUT
+  - `side`: OVER -> odds +117, UNDER -> odds -143

@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 def run_step(step_name, command, env=None):
     print(f"--- Starting {step_name} ---")
@@ -25,25 +26,19 @@ def main():
         env["PYTHONPATH"] = src_path
 
     # Flags
-    use_api = os.environ.get("USE_SELENIUM_SCRAPER", "0") == "0"
     use_live_base = os.environ.get("USE_LIVE_BASE_PROJECTIONS", "1") == "1"
     run_accuracy_backtest = os.environ.get("RUN_ACCURACY_BACKTEST", "0") == "1"
+    run_odds_ingestion = os.environ.get("RUN_ODDS_INGESTION", "1") == "1"
     
     # Paths to Scripts
     proj_dir = os.path.join("src", "nhl_bets", "projections")
-    scrapers_dir = os.path.join("src", "nhl_bets", "scrapers")
     analysis_dir = os.path.join("src", "nhl_bets", "analysis")
     backtest_pipeline_dir = os.path.join("pipelines", "backtesting")
-    
-    # Data Paths
-    data_raw_dir = os.path.join("data", "raw")
-    props_path = os.path.join(data_raw_dir, "nhl_player_props_all.csv")
+    scripts_dir = os.path.join("scripts")
     
     # Output Paths
     output_ev_dir = os.path.join("outputs", "ev_analysis")
     output_proj_dir = os.path.join("outputs", "projections")
-    out_xlsx = os.path.join(output_ev_dir, "ev_bets_ranked.xlsx")
-    out_csv = os.path.join(output_ev_dir, "ev_bets_ranked.csv")
     
     # 0. Update MoneyPuck and Rebuild Features (Live Bridge)
     if use_live_base:
@@ -68,81 +63,41 @@ def main():
         
         print("--- Finished Live Base Projection Build ---\n")
 
-    # 1. Scraper
-    print(f"--- Starting Scraper ---")
-    real_scraper_script = os.path.join(scrapers_dir, "scrape_playnow_api.py")
-    scraper_output = "nhl_player_props.csv" # The scraper outputs to CWD
-    
-    if use_api:
-        run_step("API Scraper", [sys.executable, real_scraper_script], env)
+    # 1. Odds Ingestion (Phase 11 Unified Scraper)
+    if run_odds_ingestion:
+        print("--- Starting Phase 11 Odds Ingestion ---")
+        ingest_script = os.path.join(backtest_pipeline_dir, "ingest_odds_to_duckdb.py")
+        run_step("Odds Ingestion (DuckDB)", [sys.executable, ingest_script], env)
     else:
-        # Legacy fallback
-        selenium_script = os.path.join(scrapers_dir, "nhl_props_scraper.py")
-        run_step("Selenium Scraper", [sys.executable, selenium_script], env)
-        
-    if os.path.exists(scraper_output):
-        print(f"Moving {scraper_output} to {props_path}...")
-        if os.path.exists(props_path):
-            os.remove(props_path)
-        os.rename(scraper_output, props_path)
-    else:
-        print(f"Warning: {scraper_output} not found. Checking if {props_path} exists.")
-        if not os.path.exists(props_path):
-            print("Error: No props file found after scraping.")
-            sys.exit(1)
+        print("--- Skipping Odds Ingestion (RUN_ODDS_INGESTION=0) ---\n")
 
-    # 1.5 Build Game Context
-    print(f"--- Building Game Context ---")
+    # 2. Build Game Context
+    print("--- Building Game Context ---")
     context_script = os.path.join(proj_dir, "produce_game_context.py")
-    if os.path.exists(context_script):
-        run_step("Game Context", [sys.executable, context_script], env)
-    else:
-        print(f"Warning: Context script not found at {context_script}")
-    print(f"--- Finished Game Context ---\n")
+    run_step("Game Context", [sys.executable, context_script], env)
 
-    # 2. Generate Projections
-    print(f"--- Generating Projections ---")
-    
-    # Extract date from props file for projection script
-    game_date = None
-    try:
-        import pandas as pd
-        if os.path.exists(props_path):
-            df_props = pd.read_csv(props_path)
-            if 'Game_Date' in df_props.columns and not df_props.empty:
-                dates = df_props['Game_Date'].dropna().unique()
-                if len(dates) > 0:
-                    game_date = dates[0]
-                    print(f"Detected Game Date: {game_date}")
-    except Exception as e:
-        print(f"Warning: Could not extract date from props: {e}")
-
+    # 3. Generate Projections
+    print("--- Generating Projections ---")
     proj_script = os.path.join(proj_dir, "single_game_probs.py")
-    cmd_proj = [sys.executable, proj_script]
-    if game_date:
-        cmd_proj.extend(["--date", str(game_date)])
+    run_step("Projections", [sys.executable, proj_script], env)
     
-    run_step("Projections", cmd_proj, env)
+    # 4. Multi-Book EV Analysis
+    print("--- Running Multi-Book EV Analysis ---")
+    runner_script = os.path.join(analysis_dir, "runner_duckdb.py")
+    run_step("Multi-Book EV Analysis", [sys.executable, runner_script], env)
+
+    # 5. Audit & Forensic Walkthrough
+    print("--- Running Model Audit ---")
+    audit_script = os.path.join(scripts_dir, "analysis", "audit_model_prob.py")
+    if os.path.exists(audit_script):
+        run_step("Model Audit", [sys.executable, audit_script], env)
     
-    # Output of projections is expected in outputs/projections/SingleGamePropProbabilities.csv
-    # but single_game_probs.py might still write to its own dir if not updated.
-    # We'll check both.
-    probs_output = os.path.join(output_proj_dir, "SingleGamePropProbabilities.csv")
-    if not os.path.exists(probs_output):
-        legacy_probs = os.path.join(proj_dir, "SingleGamePropProbabilities.csv")
-        if os.path.exists(legacy_probs):
-            print(f"Moving {legacy_probs} to {probs_output}")
-            os.makedirs(output_proj_dir, exist_ok=True)
-            if os.path.exists(probs_output): os.remove(probs_output)
-            os.rename(legacy_probs, probs_output)
-        else:
-            # Check CWD
-            if os.path.exists("SingleGamePropProbabilities.csv"):
-                 os.rename("SingleGamePropProbabilities.csv", probs_output)
+    # 6. Generate Best Bets Report
+    print("--- Generating Best Bets Report ---")
+    best_bets_script = os.path.join(scripts_dir, "generate_best_bets.py")
+    run_step("Best Bets", [sys.executable, best_bets_script], env)
 
-    print(f"--- Finished Projections ---\n")
-
-    # 2.5 Accuracy Backtest (Optional)
+    # 7. Accuracy Backtest (Optional)
     if run_accuracy_backtest:
         print("--- Starting Accuracy Backtest ---")
         snapshot_script = os.path.join(backtest_pipeline_dir, "build_probability_snapshots.py")
@@ -152,26 +107,9 @@ def main():
         run_step("Evaluate Accuracy", [sys.executable, accuracy_script], env)
         print("--- Finished Accuracy Backtest ---\n")
 
-    # 3. Run EV Analysis
-    print(f"--- Running EV Analysis ---")
-    runner_script = os.path.join(analysis_dir, "runner.py")
-    base_proj_path = os.path.join(output_proj_dir, "BaseSingleGameProjections.csv")
-    
-    cmd_ev = [
-        sys.executable, runner_script,
-        "--base", base_proj_path,
-        "--props", props_path,
-        "--probs", probs_output,
-        "--out_xlsx", out_xlsx,
-        "--out_csv", out_csv
-    ]
-    
-    if os.environ.get("DISABLE_CALIBRATION") == "1":
-        print("!!! CALIBRATION DISABLED BY ENVIRONMENT VARIABLE !!!")
-        
-    run_step("EV Analysis", cmd_ev, env)
-    
-    print(f"Workflow Complete. Results: {out_xlsx}")
+    print(f"\nWorkflow Complete.")
+    print(f"Primary Report: {os.path.join(output_ev_dir, 'MultiBookBestBets.xlsx')}")
+    print(f"Filtered Candidates: {os.path.join(output_ev_dir, 'BestCandidatesFiltered.xlsx')}")
 
 if __name__ == "__main__":
     main()

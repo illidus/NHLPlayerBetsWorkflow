@@ -119,7 +119,7 @@ class PlayNowAdapter:
                         "event_id_vendor": event_id,
                         "event_id_vendor_raw": event_id,
                         "event_name_raw": event_name,
-                        "event_start_ts_utc": start_time,
+                        "event_start_time_utc": start_time,
                         "home_team": home_team,
                         "away_team": away_team,
                         "player_id_vendor": None, # PlayNow doesn't give a stable player ID in this payload
