@@ -1,0 +1,17 @@
+{
+  "examples": [
+    {
+      "label": "Example 1",
+      "vendor_event_id": 12345,
+      "vendor_person_id": 67890,
+      "player_name": "First Last",
+      "market": "SOG",
+      "bet_type_id": 999,
+      "line": 2.5,
+      "side": "UNDER",
+      "book_name": "Pinnacle",
+      "market_source_id": 111,
+      "expected_american_odds": -140
+    }
+  ]
+}

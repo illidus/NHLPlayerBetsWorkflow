@@ -1,0 +1,30 @@
+{
+  "examples": [
+    {
+      "label": "Wyatt Johnston SOG Over 1.5 (FanDuel)",
+      "vendor_event_id": 104502,
+      "vendor_person_id": 242424,
+      "player_name": "Wyatt Johnston",
+      "market": "SOG",
+      "bet_type_id": 86,
+      "line": 1.5,
+      "side": "OVER",
+      "book_name": "FanDuel",
+      "market_source_id": 2,
+      "expected_american_odds": -188
+    },
+    {
+      "label": "Wyatt Johnston SOG Under 1.5 (FanDuel)",
+      "vendor_event_id": 104502,
+      "vendor_person_id": 242424,
+      "player_name": "Wyatt Johnston",
+      "market": "SOG",
+      "bet_type_id": 86,
+      "line": 1.5,
+      "side": "UNDER",
+      "book_name": "FanDuel",
+      "market_source_id": 2,
+      "expected_american_odds": 142
+    }
+  ]
+}
