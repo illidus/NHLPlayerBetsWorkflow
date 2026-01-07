@@ -1,94 +1,37 @@
-# Phase 12 Operations
+# Operational Workflow (Phase 12)
 
-## Daily Driver
-### Command
-- `python pipelines/ops/run_daily.py --help`
-- `python pipelines/ops/run_daily.py`
-- `python pipelines/ops/run_daily.py --run-odds-ingestion --run-ev`
-- `python pipelines/ops/run_daily.py --run-diagnostics`
-- `python pipelines/ops/run_daily.py --dry-run`
-- `python pipelines/ops/run_daily.py --run-odds-ingestion --step-timeout-seconds 600`
+This document describes the standardized daily workflow for the NHL Player Bets system.
 
-### Expected Artifacts
-- `outputs/monitoring/daily_run_<YYYY-MM-DD>.md`
-- `outputs/monitoring/daily_report_<YYYY-MM-DD>.md`
-- `outputs/monitoring/rolling_report.md`
-- DuckDB tables:
-  - `fact_run_registry`
-  - `fact_odds_coverage_daily`
-  - `fact_mapping_quality_daily`
-  - `fact_ev_summary_daily`
-  - `fact_forecast_accuracy_daily`
+## 1. Daily Execution
+The system is driven by a single entrypoint that ensures safe ordering and error isolation.
 
-### Troubleshooting
-- If odds ingestion fails, inspect `outputs/monitoring/ingest_status_<YYYY-MM-DD>.json`.
-- If diagnostics fail, confirm `data/db/nhl_backtest.duckdb` exists and `outputs/projections/SingleGamePropProbabilities.csv` is present.
-- Use `FORCE_VENDOR_FAILURE=UNABATED` (or `ODDSSHARK`, `PLAYNOW`) to simulate vendor failures safely.
-- `--dry-run` prints planned steps without creating artifacts.
-- To clear a forced vendor failure, ensure the environment variable is unset (e.g., `Remove-Item Env:FORCE_VENDOR_FAILURE` in PowerShell).
+```powershell
+python pipelines/ops/run_daily.py --run-production --run-odds-ingestion --run-ev --run-diagnostics --fail-fast
+```
 
-### Notes
-- OddsShark `event_id_vendor` is derived from capture date + away/home abbreviations for stable joins; raw IDs are stored in `event_id_vendor_raw`.
-- MultiBook EV analysis is **deterministic**: it will generate `MultiBookBestBets.xlsx` even if zero bets are found (empty file with headers).
-- DB Path is centralized in `src/nhl_bets/common/db_init.py`.
+### Steps:
+1. **Production Projections:** Generates the probability snapshot (`SingleGamePropProbabilities.csv`).
+2. **Odds Ingestion:** Scrapes PlayNow, Unabated, and OddsShark. Normalizes data into `fact_prop_odds`.
+3. **EV Analysis:** Computes EV% by joining the latest odds with the probability snapshot.
+4. **Diagnostics:** Updates longitudinal evidence tables and generates reports.
 
-## Freshness Gating (Phase 12.2)
-### Configuration
-- `EV_ODDS_FRESHNESS_MINUTES`: Max minutes between odds capture and probability snapshot (Default: 90).
-  - Use `set EV_ODDS_FRESHNESS_MINUTES=120` (PowerShell: `$env:EV_ODDS_FRESHNESS_MINUTES="120"`) to override.
+## 2. Automated Evidence Chain
+Every run produces artifacts in `outputs/monitoring/` for rapid verification.
 
-### Monitoring
-- Report: `outputs/monitoring/ev_freshness_coverage_<YYYY-MM-DD>.md`
-  - Checks total candidates vs. those retained after freshness filter.
-  - Lists excluded counts by vendor/book.
-- Output: `outputs/ev_analysis/MultiBookBestBets.xlsx` now includes:
-  - `freshness_minutes`
-  - `capture_ts_utc`
-  - `prob_snapshot_ts`
+- **`daily_report_YYYY-MM-DD.md`:** Executive summary of step status, vendor health, and record counts.
+- **`ev_freshness_coverage_latest.md`:** Audit of how many bets were excluded due to staleness (>90m) or games already starting.
+- **`unabated_mapping_coverage_latest.md`:** Confirmation that Unabated odds are correctly tied to events and players.
+- **`cross_book_coherence_latest.md`:** Detection of price outliers across different sportsbooks.
+- **`top5_ev_walkthrough_latest.md`:** Forensic walkthrough of the highest EV bets, tracing math from Mu -> Distribution -> Odds -> EV.
 
-## Unabated Backfill
-### Command
-- `python pipelines/odds/backfill_unabated_snapshots.py --start-date YYYY-MM-DD --end-date YYYY-MM-DD --dry-run`
-- `python pipelines/odds/backfill_unabated_snapshots.py --start-date YYYY-MM-DD --end-date YYYY-MM-DD --max-requests 1 --max-elapsed-seconds 60`
+## 3. Database Schema
+Longitudinal data is stored in DuckDB for trend analysis:
+- `fact_run_registry`: History of every script execution.
+- `fact_odds_coverage_daily`: Volume by vendor/book/market.
+- `fact_mapping_quality_daily`: Success rate of player/event joins.
+- `fact_ev_summary_daily`: Aggregate EV stats to detect model drift or market shifts.
 
-### Expected Artifacts
-- Raw snapshots under `outputs/odds/raw/UNABATED/YYYY/MM/DD/`
-- Inserts into `fact_prop_odds` and `raw_odds_payloads`
-
-### Troubleshooting
-- If the backfill stops early, verify `--max-requests` and `--max-elapsed-seconds` caps.
-- Reruns should skip existing snapshot dates and avoid duplicate inserts.
-
-## Run Log
-### 2026-01-06
-- Commands:
-  - `python pipelines/ops/run_daily.py --help`
-  - `python pipelines/ops/run_daily.py`
-  - `python pipelines/ops/run_daily.py --run-odds-ingestion --run-ev`
-  - `python pipelines/ops/run_daily.py --run-diagnostics` (initial failure, then rerun after fix)
-  - `FORCE_VENDOR_FAILURE=UNABATED python pipelines/ops/run_daily.py --run-odds-ingestion --run-diagnostics`
-  - `python pipelines/ops/run_daily.py --dry-run`
-  - `python pipelines/odds/backfill_unabated_snapshots.py --start-date 2026-01-05 --end-date 2026-01-06 --dry-run`
-  - `python pipelines/odds/backfill_unabated_snapshots.py --start-date 2026-01-07 --end-date 2026-01-07 --max-requests 1 --max-elapsed-seconds 60`
-  - `python scripts/golden_run_validate.py`
-  - `pytest -q tests/test_phase12_smoke.py tests/test_oddsshark_event_id.py tests/test_quoted_odds_fields.py`
-  - `python pipelines/production/run_production_pipeline.py`
-- Results:
-  - Daily driver help/skip runs completed.
-  - Odds ingestion + EV run completed; multi-book EV export produced.
-  - Diagnostics initially failed (DuckDB prepared parameter in temp view); fixed by inlining values; rerun succeeded.
-  - Forced vendor failure recorded for Unabated while run completed.
-  - Backfill dry-run printed plan; one-day backfill run completed within caps and skipped duplicate payloads.
-  - Golden run validation PASS.
-  - Dry-run prints planned steps with no side effects.
-  - Phase 12 smoke tests PASS.
-  - Production pipeline executed; MoneyPuck downloads skipped due to 403 (used existing local data).
-- Artifacts:
-  - `outputs/monitoring/daily_run_2026-01-06.md`
-  - `outputs/monitoring/daily_report_2026-01-06.md`
-  - `outputs/monitoring/rolling_report.md`
-  - `outputs/monitoring/ingest_status_2026-01-06.json`
-  - `outputs/ev_analysis/MultiBookBestBets.xlsx`
-  - `outputs/audits/ev_prob_audit_2026-01-07.md`
-  - `outputs/audits/ev_prob_audit_2026-01-07.csv`
-  - `outputs/audits/ev_prob_audit_2026-01-07.jsonl`
+## 4. Maintenance & Debugging
+- **Vendor Failures:** If a scraper fails, `run_daily.py` will log it but continue with other vendors (unless `--fail-fast` is used).
+- **Stale Odds:** If `MultiBookBestBets.xlsx` is empty, check `ev_freshness_coverage_latest.md` to see if the odds were scraped too long after the probability snapshot.
+- **Audit Failures:** If a bet looks "too good to be true," use `scripts/analysis/audit_model_prob.py` to generate a fresh walkthrough.
