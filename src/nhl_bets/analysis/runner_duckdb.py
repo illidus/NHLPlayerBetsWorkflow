@@ -15,7 +15,7 @@ if src_dir not in sys.path:
 from nhl_bets.analysis.normalize import normalize_name, get_mapped_odds
 from nhl_bets.projections.config import get_production_prob_column, ALPHAS, MARKET_POLICY
 
-from nhl_bets.common.db_init import get_db_connection, DEFAULT_DB_PATH
+from nhl_bets.common.db_init import get_db_connection, DEFAULT_DB_PATH, initialize_phase11_tables
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 DB_PATH = DEFAULT_DB_PATH
 PROBS_PATH = 'outputs/projections/SingleGamePropProbabilities.csv'
 OUTPUT_XLSX = 'outputs/ev_analysis/MultiBookBestBets.xlsx'
+
+def parse_exclusion_list(env_key, default_list=None):
+    raw = os.environ.get(env_key, "").strip()
+    if not raw:
+        return []
+    if raw.lower() in ("1", "true", "yes"):
+        return default_list or []
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
 
 def get_mu_column(market):
     m = market.upper()
@@ -64,6 +72,43 @@ def filter_by_freshness(df, snapshot_ts_dt, window_minutes):
     
     return df_fresh, df_excluded
 
+def filter_by_event_eligibility(df, now_utc, grace_minutes=0):
+    """
+    Filters bets to only include those that are bettable now (not started or within grace).
+    Returns (df_eligible, df_started, df_missing_time)
+    """
+    if df.empty:
+        return df, pd.DataFrame(), pd.DataFrame()
+
+    # Ensure event_start_time_utc is datetime aware
+    df['event_start_time_dt'] = pd.to_datetime(df['event_start_time_utc'], utc=True, errors='coerce')
+    
+    # event_time_delta_minutes = (event_start_time_utc - now_utc) in minutes
+    df['event_time_delta_minutes'] = (df['event_start_time_dt'] - now_utc).dt.total_seconds() / 60.0
+    
+    # is_bettable_now: game hasn't started yet OR within grace_minutes
+    # AND is_live == False (unless we specifically allow live, but task says default false)
+    
+    mask_missing = df['event_start_time_dt'].isna()
+    mask_started = (df['event_start_time_dt'].notna()) & (df['event_start_time_dt'] < now_utc - timedelta(minutes=grace_minutes))
+    
+    # Optionally also filter by is_live if it's explicitly True
+    # If is_live is True, we might exclude it depending on policy.
+    # Task says: "only include if is_live == false by default"
+    mask_live = df['is_live'] == True
+    
+    mask_eligible = (~mask_missing) & (~mask_started) & (~mask_live)
+    
+    df_eligible = df[mask_eligible].copy()
+    df_started = df[mask_started].copy()
+    df_missing = df[mask_missing].copy()
+    df_live = df[mask_live].copy() # We can treat live as started/ineligible for now
+    
+    df_eligible['is_bettable_now'] = True
+    
+    # Combine started and live for the started return if desired, or keep separate
+    return df_eligible, df_started, df_missing, df_live
+
 def main():
     run_start_ts = datetime.now(timezone.utc)
     logger.info(f"Starting Multi-Book EV Analysis at {run_start_ts.isoformat()}...")
@@ -71,6 +116,7 @@ def main():
     # 1. Load Mapped Odds from DuckDB
     con = get_db_connection(DB_PATH)
     try:
+        initialize_phase11_tables(con)
         df_odds = get_mapped_odds(con)
         logger.info(f"Loaded {len(df_odds)} mapped odds records.")
     finally:
@@ -142,18 +188,23 @@ def main():
     results = []
     
     # Standard books only (exclude Pick'em/DFS with non-standard pricing)
-    EXCLUDED_KEYWORDS = ['underdog', 'prizepicks', 'parlayplay', 'sleeper', 'chalkboard', 'boom']
+    default_excluded_keywords = ['underdog', 'prizepicks', 'parlayplay', 'sleeper', 'chalkboard', 'boom']
+    excluded_keywords = parse_exclusion_list("EV_EXCLUDE_BOOK_TYPES", default_excluded_keywords)
+    excluded_markets = parse_exclusion_list("EV_EXCLUDE_MARKETS", [])
+    excluded_markets_upper = {m.upper() for m in excluded_markets}
     
     if not merged.empty:
         for idx, row in merged.iterrows():
-            book_name_lower = row['book_name_raw'].lower()
-            if any(kw in book_name_lower for kw in EXCLUDED_KEYWORDS):
+            book_name_raw = row.get('book_name_raw') or ''
+            book_name_lower = book_name_raw.lower()
+            if excluded_keywords and any(kw in book_name_lower for kw in excluded_keywords):
+                continue
+
+            market_type = row['market_type']
+            if excluded_markets_upper and market_type.upper() in excluded_markets_upper:
                 continue
                 
-            if row['market_type'] == 'GOALS':
-                continue # Blacklisted
-                
-            stat_type = row['market_type'].lower()
+            stat_type = market_type.lower()
             line = row['line']
             
             # Select correct model probability column based on policy
@@ -192,15 +243,22 @@ def main():
                 'Side': row['side'],
                 'Book': row['book_name_raw'],
                 'Odds': row['odds_american'],
-                'Model_Prob': f"{p_model:.1%}",
-                'Implied_Prob': f"{1/odds_decimal:.1%}",
-                'EV%': f"{ev:+.1%}",
+                'Model_Prob': p_model,
+                'Implied_Prob': 1/odds_decimal,
+                'EV%': ev,
+                'Model_Prob_display': f"{p_model:.1%}",
+                'Implied_Prob_display': f"{1/odds_decimal:.1%}",
+                'EV_display': f"{ev:+.1%}",
                 'ev_sort': ev,
                 'Prob_Source': 'Calibrated' if is_calibrated else 'Raw',
                 'Source_Col': prob_col,
                 # New Provenance Columns
                 'source_vendor': row.get('source_vendor', 'UNKNOWN'),
                 'capture_ts_utc': row.get('capture_ts_utc'),
+                'event_start_time_utc': row.get('event_start_time_utc'),
+                'home_team': row.get('home_team'),
+                'away_team': row.get('away_team'),
+                'is_live': row.get('is_live', False),
                 'raw_payload_hash': row.get('raw_payload_hash', ''),
                 'mu': mu_val,
                 'distribution': dist_name,
@@ -218,15 +276,29 @@ def main():
     except ValueError:
         freshness_window = 90.0
 
+    try:
+        grace_minutes = float(os.environ.get('EV_EVENT_START_GRACE_MINUTES', 0))
+    except ValueError:
+        grace_minutes = 0.0
+
     total_candidates = len(df_results)
     
     if not df_results.empty:
-        df_fresh, df_excluded = filter_by_freshness(df_results, prob_snapshot_ts_dt, freshness_window)
-        logger.info(f"Freshness Filter (Window={freshness_window}m): kept {len(df_fresh)}/{total_candidates} rows.")
+        # 1. Freshness Filter
+        df_fresh, df_excluded_stale = filter_by_freshness(df_results, prob_snapshot_ts_dt, freshness_window)
+        
+        # 2. Event Eligibility Filter (Phase 12.7)
+        df_eligible, df_started, df_missing_time, df_live = filter_by_event_eligibility(df_fresh, run_start_ts, grace_minutes)
+        
+        logger.info(f"Freshness Filter: kept {len(df_fresh)}/{total_candidates} rows.")
+        logger.info(f"Eligibility Filter: kept {len(df_eligible)}/{len(df_fresh)} rows (Started={len(df_started)}, MissingTime={len(df_missing_time)}, Live={len(df_live)}).")
     else:
-        df_fresh = pd.DataFrame(columns=['Player', 'Team', 'Market', 'Line', 'Side', 'Book', 'Odds', 'Model_Prob', 'Implied_Prob', 'EV%', 'ev_sort', 'Prob_Source', 'Source_Col', 'source_vendor', 'capture_ts_utc', 'capture_ts_dt', 'raw_payload_hash', 'mu', 'distribution', 'alpha', 'prob_snapshot_ts', 'freshness_minutes'])
-        df_excluded = pd.DataFrame()
-        logger.warning("No bets found to filter for freshness.")
+        df_eligible = pd.DataFrame()
+        df_excluded_stale = pd.DataFrame()
+        df_started = pd.DataFrame()
+        df_missing_time = pd.DataFrame()
+        df_live = pd.DataFrame()
+        logger.warning("No bets found to filter for freshness or eligibility.")
 
     # Generate Diagnostics Report
     run_end_ts = datetime.now(timezone.utc)
@@ -245,45 +317,51 @@ def main():
     report_content.append(f"- **Run Start (UTC):** {run_start_ts.isoformat()}\n")
     report_content.append(f"- **Run End (UTC):** {run_end_ts.isoformat()}\n")
     report_content.append(f"- **Total Candidates:** {total_candidates}\n")
-    report_content.append(f"- **Retained (Fresh):** {len(df_fresh)}\n")
-    report_content.append(f"- **Excluded (Stale/Missing):** {len(df_excluded)}\n")
-    report_content.append(f"- **Window:** {freshness_window} minutes\n")
+    report_content.append(f"- **Total Raw Candidates:** {total_candidates}\n")
+    report_content.append(f"- **Retained (Eligible & Fresh):** {len(df_eligible)}\n")
+    report_content.append(f"- **Excluded (Stale):** {len(df_excluded_stale)}\n")
+    report_content.append(f"- **Excluded (Started/Live):** {len(df_started) + len(df_live)}\n")
+    report_content.append(f"- **Excluded (Missing Start Time):** {len(df_missing_time)}\n")
+    report_content.append(f"- **Freshness Window:** {freshness_window} minutes\n")
+    report_content.append(f"- **Grace Period:** {grace_minutes} minutes\n")
     report_content.append(f"- **Snapshot TS:** {prob_snapshot_ts_str}\n\n")
     
     report_content.append("## Diagnostics\n")
     report_content.append("_Note: Ensure 'Production Projections' runs immediately before 'Odds Ingestion' and 'EV Analysis' for optimal alignment._\n\n")
 
-    if not df_fresh.empty:
+    if not df_eligible.empty:
         # Use capture_ts_dt which is aware UTC
-        min_cap = df_fresh['capture_ts_dt'].min()
-        max_cap = df_fresh['capture_ts_dt'].max()
+        min_cap = df_eligible['capture_ts_dt'].min()
+        max_cap = df_eligible['capture_ts_dt'].max()
         min_cap_str = min_cap.isoformat() if pd.notnull(min_cap) else "N/A"
         max_cap_str = max_cap.isoformat() if pd.notnull(max_cap) else "N/A"
         
-        min_fresh = df_fresh['freshness_minutes'].min()
-        med_fresh = df_fresh['freshness_minutes'].median()
-        max_fresh = df_fresh['freshness_minutes'].max()
+        min_fresh = df_eligible['freshness_minutes'].min()
+        med_fresh = df_eligible['freshness_minutes'].median()
+        max_fresh = df_eligible['freshness_minutes'].max()
         
-        report_content.append(f"### Fresh Data Stats\n")
+        report_content.append(f"### Eligible Data Stats\n")
         report_content.append(f"- **Capture TS Range (UTC):** {min_cap_str} to {max_cap_str}\n")
         report_content.append(f"- **Freshness (min):** Min={min_fresh:.2f}, Med={med_fresh:.2f}, Max={max_fresh:.2f}\n\n")
     
-    if not df_excluded.empty:
-        report_content.append("## Excluded Breakdown by Vendor/Book\n")
-        if 'Book' in df_excluded.columns and 'source_vendor' in df_excluded.columns:
-            breakdown = df_excluded.groupby(['source_vendor', 'Book']).size().reset_index(name='count')
+    if not df_excluded_stale.empty:
+        report_content.append("## Excluded: Stale Breakdown\n")
+        if 'Book' in df_excluded_stale.columns and 'source_vendor' in df_excluded_stale.columns:
+            breakdown = df_excluded_stale.groupby(['source_vendor', 'Book']).size().reset_index(name='count')
             report_content.append(breakdown.to_markdown(index=False))
-            
-            # Capture range for excluded
-            report_content.append("\n\n### Excluded Capture Range by Vendor (UTC)\n")
-            if 'capture_ts_dt' in df_excluded.columns:
-                ex_stats = df_excluded.groupby('source_vendor')['capture_ts_dt'].agg(['min', 'max']).reset_index()
-                # Format timestamps in the summary table
-                ex_stats['min'] = ex_stats['min'].apply(lambda x: x.isoformat() if pd.notnull(x) else "N/A")
-                ex_stats['max'] = ex_stats['max'].apply(lambda x: x.isoformat() if pd.notnull(x) else "N/A")
-                report_content.append(ex_stats.to_markdown(index=False))
-        else:
-            report_content.append("(Book/Vendor columns missing)")
+        report_content.append("\n\n")
+
+    if not df_missing_time.empty:
+        report_content.append("## Excluded: Missing Start Time Breakdown\n")
+        breakdown = df_missing_time.groupby(['source_vendor', 'Book']).size().reset_index(name='count')
+        report_content.append(breakdown.to_markdown(index=False))
+        report_content.append("\n\n")
+    
+    if not df_started.empty or not df_live.empty:
+        report_content.append("## Excluded: Already Started or Live\n")
+        df_too_late = pd.concat([df_started, df_live])
+        breakdown = df_too_late.groupby(['source_vendor', 'Book']).size().reset_index(name='count')
+        report_content.append(breakdown.to_markdown(index=False))
         report_content.append("\n\n")
     
     full_report = "".join(report_content)
@@ -295,8 +373,8 @@ def main():
     with open(latest_path, 'w', encoding='utf-8') as f:
         f.write(full_report)
         
-    # Proceed with fresh data
-    df_filtered = df_fresh[df_fresh['ev_sort'] >= 0.02].copy() if not df_fresh.empty else pd.DataFrame()
+    # Proceed with eligible data
+    df_filtered = df_eligible[df_eligible['ev_sort'] >= 0.02].copy() if not df_eligible.empty else pd.DataFrame()
     
     # 5. Filter and Sort
     # Deduplication (Deterministic)
@@ -323,17 +401,47 @@ def main():
     # 6. Export
     os.makedirs(os.path.dirname(OUTPUT_XLSX), exist_ok=True)
     
-    # Drop intermediate columns if desired, but keep freshness for transparency
-    cols_to_drop = ['ev_sort', 'capture_ts_dt']
+    # Drop intermediate columns if desired, but keep freshness and event time for transparency
+    cols_to_drop = ['ev_sort', 'capture_ts_dt', 'event_start_time_dt']
     df_export = df_ev.drop(columns=[c for c in cols_to_drop if c in df_ev.columns])
         
-    df_export.to_excel(OUTPUT_XLSX, index=False)
+    if df_export.empty:
+        df_export.to_excel(OUTPUT_XLSX, index=False, sheet_name='BestBets')
+    else:
+        # Use ExcelWriter for formatting
+        with pd.ExcelWriter(OUTPUT_XLSX, engine='openpyxl') as writer:
+            df_export.to_excel(writer, index=False, sheet_name='BestBets')
+            
+            # Apply number formats
+            workbook = writer.book
+            if 'BestBets' not in workbook.sheetnames:
+                logger.warning("BestBets sheet not found for formatting.")
+                worksheet = None
+            else:
+                worksheet = workbook['BestBets']
+            
+            # Find column indices for probability and EV
+            col_names = list(df_export.columns)
+            try:
+                m_idx = col_names.index('Model_Prob') + 1 # openpyxl is 1-indexed
+                i_idx = col_names.index('Implied_Prob') + 1
+                e_idx = col_names.index('EV%') + 1
+                
+                # Formatting as percentage with 1 decimal
+                if worksheet is not None:
+                    for row in range(2, len(df_export) + 2):
+                        worksheet.cell(row=row, column=m_idx).number_format = '0.0%'
+                        worksheet.cell(row=row, column=i_idx).number_format = '0.0%'
+                        worksheet.cell(row=row, column=e_idx).number_format = '0.0%'
+            except ValueError:
+                pass # Columns might be missing if empty df
+            
     logger.info(f"Exported best bets to {OUTPUT_XLSX}")
     
     # Print Top 10
     print("\n--- TOP 10 MULTI-BOOK BEST BETS ---")
     if not df_ev.empty:
-        print(df_ev[['Player', 'Market', 'Line', 'Side', 'Book', 'Odds', 'EV%']].head(10).to_string(index=False))
+        print(df_ev[['Player', 'Market', 'Line', 'Side', 'Book', 'Odds', 'EV_display']].head(10).to_string(index=False))
     else:
         print("(No bets found)")
 
