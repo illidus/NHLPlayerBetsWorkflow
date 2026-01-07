@@ -34,6 +34,7 @@ def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
         side TEXT,
         book_id_vendor TEXT,
         book_name_raw TEXT,
+        book_type TEXT,
         odds_american INTEGER,
         odds_decimal DOUBLE,
         odds_quoted_raw TEXT,
@@ -65,6 +66,7 @@ def initialize_phase11_tables(con: duckdb.DuckDBPyConnection):
     con.execute("ALTER TABLE fact_prop_odds ADD COLUMN IF NOT EXISTS vendor_price_raw TEXT")
     con.execute("ALTER TABLE fact_prop_odds ADD COLUMN IF NOT EXISTS vendor_price_format TEXT")
     con.execute("ALTER TABLE fact_prop_odds ADD COLUMN IF NOT EXISTS player_team TEXT")
+    con.execute("ALTER TABLE fact_prop_odds ADD COLUMN IF NOT EXISTS book_type TEXT")
 
     # Phase 12.7 Migration: Rename event_start_ts_utc to event_start_time_utc
     cols = [row[1] for row in con.execute("PRAGMA table_info('fact_prop_odds')").fetchall()]

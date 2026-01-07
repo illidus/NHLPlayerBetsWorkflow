@@ -25,6 +25,17 @@ class UnabatedClient:
         88: "BLOCKS",
         129: "GOALS"
     }
+
+    DFS_FIXED_PAYOUT_KEYWORDS = {
+        "underdog",
+        "prizepicks",
+        "pick6",
+        "pick-6",
+        "sleeper",
+        "parlayplay",
+        "chalkboard",
+        "boom"
+    }
     
     def __init__(self, timeout: int = 30):
         self.timeout = timeout
@@ -162,6 +173,12 @@ class UnabatedClient:
                         continue
 
                     book_name = market_sources.get(book_id, f"Unknown Book {book_id}")
+                    book_name_lower = book_name.lower()
+                    book_type = (
+                        "DFS_FIXED_PAYOUT"
+                        if any(keyword in book_name_lower for keyword in self.DFS_FIXED_PAYOUT_KEYWORDS)
+                        else "SPORTSBOOK"
+                    )
                     
                     line = price_data.get("points")
                     price_american = price_data.get("americanPrice")
@@ -205,6 +222,7 @@ class UnabatedClient:
                                 "side": sid,
                                 "book_id_vendor": book_id,
                                 "book_name_raw": book_name,
+                                "book_type": book_type,
                                 "odds_american": int(p),
                                 "odds_decimal": o_dec,
                                 "odds_quoted_raw": str(p),

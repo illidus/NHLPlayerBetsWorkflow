@@ -1,30 +1,30 @@
 {
   "examples": [
     {
-      "label": "Wyatt Johnston SOG Over 1.5 (FanDuel)",
+      "label": "Sebastian Aho SOG Over 2.5 (Novig)",
       "vendor_event_id": 104502,
-      "vendor_person_id": 242424,
-      "player_name": "Wyatt Johnston",
+      "vendor_person_id": 44247,
+      "player_name": "Sebastian Aho",
       "market": "SOG",
       "bet_type_id": 86,
-      "line": 1.5,
+      "line": 2.5,
       "side": "OVER",
-      "book_name": "FanDuel",
-      "market_source_id": 2,
-      "expected_american_odds": -188
+      "book_name": "Novig",
+      "market_source_id": 89,
+      "expected_american_odds": 108
     },
     {
-      "label": "Wyatt Johnston SOG Under 1.5 (FanDuel)",
+      "label": "Wyatt Johnston Assists Under 0.5 (Underdog Fantasy)",
       "vendor_event_id": 104502,
       "vendor_person_id": 242424,
       "player_name": "Wyatt Johnston",
-      "market": "SOG",
-      "bet_type_id": 86,
-      "line": 1.5,
+      "market": "ASSISTS",
+      "bet_type_id": 73,
+      "line": 0.5,
       "side": "UNDER",
-      "book_name": "FanDuel",
-      "market_source_id": 2,
-      "expected_american_odds": 142
+      "book_name": "Underdog Fantasy",
+      "market_source_id": 73,
+      "expected_american_odds": 151
     }
   ]
 }

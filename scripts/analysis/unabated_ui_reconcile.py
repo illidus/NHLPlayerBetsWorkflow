@@ -13,7 +13,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "src"))
 
 from nhl_bets.scrapers.unabated_client import UnabatedClient
-from nhl_bets.common.db_init import DEFAULT_DB_PATH
+from nhl_bets.common.db_init import DEFAULT_DB_PATH, initialize_phase11_tables
 
 
 def get_latest_unabated_file(root_dir: Path) -> Path:
@@ -35,6 +35,14 @@ def map_side(side_key: str) -> str:
     if side_key.startswith("si1"):
         return "UNDER"
     return "UNKNOWN"
+
+
+def classify_book_type(book_name: str) -> str:
+    if not book_name:
+        return "UNKNOWN"
+    name = book_name.lower()
+    keywords = UnabatedClient.DFS_FIXED_PAYOUT_KEYWORDS
+    return "DFS_FIXED_PAYOUT" if any(k in name for k in keywords) else "SPORTSBOOK"
 
 
 def american_to_decimal(american: int) -> float:
@@ -82,7 +90,7 @@ def build_db_query(filters: dict) -> tuple:
 
     query = f"""
         SELECT vendor_event_id, vendor_person_id, event_start_time_utc, home_team, away_team,
-               player_name_raw, market_type, line, side, book_name_raw, odds_american,
+               player_name_raw, market_type, line, side, book_name_raw, book_type, odds_american,
                odds_decimal, vendor_market_source_id, vendor_bet_type_id, vendor_outcome_key,
                vendor_price_raw, vendor_price_format, raw_payload_hash, capture_ts_utc
         FROM fact_prop_odds
@@ -157,6 +165,7 @@ def reconcile_example(example: dict, raw_data: dict, con: duckdb.DuckDBPyConnect
                     "mappedSide": mapped_side,
                     "marketSourceId": book_id,
                     "bookName": market_sources.get(book_id, "UNKNOWN"),
+                    "bookType": classify_book_type(market_sources.get(book_id, "")),
                     "points": points,
                     "americanPrice": american,
                     "price": price_data.get("price"),
@@ -176,6 +185,8 @@ def reconcile_example(example: dict, raw_data: dict, con: duckdb.DuckDBPyConnect
     }
     query, params = build_db_query(query_filters)
     db_rows = con.execute(query, params).df()
+    if not db_rows.empty and "book_name_raw" in db_rows.columns:
+        db_rows["book_type"] = db_rows["book_name_raw"].apply(classify_book_type)
 
     checks = []
     if expected_american is not None and not raw_df.empty:
@@ -285,6 +296,7 @@ def main():
 
     con = duckdb.connect(str(project_root / DEFAULT_DB_PATH))
     try:
+        initialize_phase11_tables(con)
         results = [reconcile_example(example, raw_data, con) for example in examples]
     finally:
         con.close()
