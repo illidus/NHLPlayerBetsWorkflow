@@ -26,6 +26,23 @@ def generate_unabated_coverage_report(db_path: str, output_dir: str):
         
         # 4. Rows with player mapping resolved (vendor_person_id)
         with_person_id = con.execute("SELECT count(*) FROM fact_prop_odds WHERE source_vendor = 'UNABATED' AND vendor_person_id IS NOT NULL").fetchone()[0]
+
+        # 5. Rows with home/away teams resolved
+        with_matchup = con.execute("""
+            SELECT count(*) FROM fact_prop_odds
+            WHERE source_vendor = 'UNABATED'
+              AND home_team IS NOT NULL
+              AND away_team IS NOT NULL
+        """).fetchone()[0]
+
+        # 6. Rows with player team resolved via metadata
+        with_player_team = con.execute("""
+            SELECT count(*) FROM fact_prop_odds o
+            JOIN dim_players_unabated p
+              ON o.vendor_person_id = p.vendor_person_id
+            WHERE o.source_vendor = 'UNABATED'
+              AND p.team_abbr IS NOT NULL
+        """).fetchone()[0]
         
         # 5. Top 10 unresolved samples
         unresolved_samples = con.execute("""
@@ -39,6 +56,8 @@ def generate_unabated_coverage_report(db_path: str, output_dir: str):
         coverage_event = (with_event_id / total_unabated) * 100
         coverage_time = (with_start_time / total_unabated) * 100
         coverage_person = (with_person_id / total_unabated) * 100
+        coverage_matchup = (with_matchup / total_unabated) * 100
+        coverage_player_team = (with_player_team / total_unabated) * 100
         
         report_content = f"""# Unabated Mapping Coverage Report
 **Generated at:** {datetime.now(timezone.utc).isoformat()}
@@ -48,6 +67,8 @@ def generate_unabated_coverage_report(db_path: str, output_dir: str):
 - **Rows with vendor_event_id:** {with_event_id} ({coverage_event:.2f}%)
 - **Rows with event_start_time_utc:** {with_start_time} ({coverage_time:.2f}%)
 - **Rows with vendor_person_id:** {with_person_id} ({coverage_person:.2f}%)
+- **Rows with home/away teams:** {with_matchup} ({coverage_matchup:.2f}%)
+- **Rows with player_team via metadata:** {with_player_team} ({coverage_player_team:.2f}%)
 
 ## Top 10 Unresolved Samples
 {unresolved_samples.to_markdown(index=False) if not unresolved_samples.empty else "None"}

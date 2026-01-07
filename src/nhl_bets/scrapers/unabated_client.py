@@ -80,6 +80,10 @@ class UnabatedClient:
             # Strictly skip any non-standard sub-types (Milestones, Alt lines etc)
             if prop.get("betSubType") is not None:
                 continue 
+            
+            # Allow Status 1 (Active) and 2 (Closed/Final)
+            if prop.get("statusId") not in [1, 2]:
+                continue
                 
             bet_type_id = prop.get("betTypeId")
             market_type = self.BET_TYPE_MAP.get(bet_type_id)
@@ -90,6 +94,9 @@ class UnabatedClient:
             person_id = str(prop.get("personId"))
             person_data = people.get(person_id, {})
             player_name = f"{person_data.get('firstName', '')} {person_data.get('lastName', '')}".strip()
+
+            team_id = str(prop.get("teamId") or "")
+            player_team = teams_map.get(team_id, {}).get("abbreviation") if team_id else None
             
             event_id = str(prop.get("eventId"))
             event_start = prop.get("eventStart")
@@ -120,9 +127,11 @@ class UnabatedClient:
                 players_map[person_id] = {
                     "vendor_person_id": person_id,
                     "player_name": player_name,
-                    "team_abbr": None, # Unabated doesn't always have a single stable team for a person in this view
+                    "team_abbr": player_team,
                     "capture_ts_utc": capture_ts
                 }
+            elif players_map[person_id].get("team_abbr") is None and player_team:
+                players_map[person_id]["team_abbr"] = player_team
 
             sides = prop.get("sides", {})
             if market_type == "GOALS" and len(sides) < 2:
@@ -133,9 +142,13 @@ class UnabatedClient:
 
             for side_key, book_data in sides.items():
                 # side_key usually looks like 'si1:pid45587' or 'si0:pid45587'
-                # VERIFIED BY SCREENSHOT: 
-                # si1 is typically UNDER, si0 is typically OVER for prop markets
-                side = "UNDER" if side_key.startswith("si1") else "OVER"
+                # VERIFIED BY UI/RAW: si0 -> OVER, si1 -> UNDER for prop markets
+                if side_key.startswith("si0"):
+                    side = "OVER"
+                elif side_key.startswith("si1"):
+                    side = "UNDER"
+                else:
+                    continue
                 
                 for ms_key, price_data in book_data.items():
                     book_id = ms_key.replace("ms", "")
@@ -186,6 +199,7 @@ class UnabatedClient:
                                 "player_id_vendor": person_id,
                                 "vendor_person_id": person_id,
                                 "player_name_raw": player_name,
+                                "player_team": player_team,
                                 "market_type": market_type,
                                 "line": l_float,
                                 "side": sid,
@@ -221,7 +235,7 @@ class UnabatedClient:
                             if alt_line is not None and alt_price is not None:
                                 # We use a lower priority for alts if they clash with main lines
                                 # but usually alts don't have IDs anyway.
-                                add_record(alt_line, alt_price, side, f"{side_key}_alt_{alt_line}", alt_ml_id)
+                                add_record(alt_line, alt_price, side, side_key, alt_ml_id)
 
             # Extract the actual records from the deduplicated map
             for best_rec in prop_best_records.values():
