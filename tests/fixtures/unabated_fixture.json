@@ -1,0 +1,59 @@
+{
+  "people": {
+    "12345": {
+      "firstName": "Wyatt",
+      "lastName": "Johnston"
+    }
+  },
+  "marketSources": [
+    {
+      "id": 2,
+      "name": "FanDuel",
+      "statusId": 1
+    }
+  ],
+  "teams": {
+    "734": {
+      "abbreviation": "CAR"
+    },
+    "747": {
+      "abbreviation": "DAL"
+    }
+  },
+  "odds": {
+    "lg6:pt1:pregame": [
+      {
+        "eventId": "999",
+        "personId": 12345,
+        "betTypeId": 86,
+        "eventStart": "2026-01-07T00:00:00Z",
+        "eventName": "Stars Dallas DAL @ Hurricanes Carolina CAR",
+        "eventTeams": {
+          "1": {
+            "id": 734
+          },
+          "0": {
+            "id": 747
+          }
+        },
+        "teamId": 747,
+        "statusId": 1,
+        "betSubType": null,
+        "sides": {
+          "si0:pid12345": {
+            "ms2": {
+              "points": 1.5,
+              "americanPrice": -188
+            }
+          },
+          "si1:pid12345": {
+            "ms2": {
+              "points": 1.5,
+              "americanPrice": 142
+            }
+          }
+        }
+      }
+    ]
+  }
+}

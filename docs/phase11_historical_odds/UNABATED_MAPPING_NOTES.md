@@ -14,8 +14,8 @@ Mapped from `betTypeId` in the raw JSON:
 
 ### Side (`side`)
 Determined by the `sideKey` in the `sides` dictionary:
-- Keys starting with `si1` (e.g., `si1:pid45587`) are mapped to **`OVER`**.
-- Keys starting with `si0` (e.g., `si0:pid45587`) are mapped to **`UNDER`**.
+- Keys starting with `si0` (e.g., `si0:pid45587`) are mapped to **`OVER`**.
+- Keys starting with `si1` (e.g., `si1:pid45587`) are mapped to **`UNDER`**.
 *Note: This convention is specific to prop markets in the Unabated API structure.*
 
 ### Sportsbook (`book_name_raw`)
@@ -46,3 +46,4 @@ python scripts/analysis/debug_unabated_mapping.py --person-id 45587 --bet-type-i
 Known Gotchas:
 - **Anytime Goal Scorer:** These markets (betTypeId 129) often only have a 'Yes' side. The parser currently filters out GOALS markets with fewer than 2 sides to avoid ambiguity until settlement logic is refined.
 - **Milestones/Alt Lines:** The parser currently skips records where `betSubType` is present to focus on standard lines.
+- **Player Team:** When `teamId` is available on the prop, it is mapped to a team abbreviation via `teams` and stored in Unabated metadata/odds.

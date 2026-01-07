@@ -12,7 +12,7 @@ def test_unabated_parse_snapshot_v2():
             "12345": {"firstName": "Auston", "lastName": "Matthews"}
         },
         "marketSources": [
-            {"id": 73, "name": "DraftKings"}
+            {"id": 73, "name": "DraftKings", "statusId": 1}
         ],
         "teams": {
             "726": {"abbreviation": "TOR"},
@@ -26,6 +26,7 @@ def test_unabated_parse_snapshot_v2():
                     "eventId": 98765,
                     "eventStart": "2026-01-06T19:00:00Z",
                     "eventName": "Maple Leafs @ Canadiens",
+                    "statusId": 1,
                     "eventTeams": {
                         "1": {"id": 726},
                         "0": {"id": 753}
