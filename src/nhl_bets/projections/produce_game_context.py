@@ -13,9 +13,13 @@ if src_dir not in sys.path:
 
 try:
     from nhl_bets.analysis.normalize import TEAM_MAP, get_teams_from_slug
+    from nhl_bets.projections.config import LG_SA60, LG_XGA60, LG_PACE
 except ImportError as e:
-    print(f"Error: Could not import normalization utils from nhl_bets.analysis: {e}")
-    sys.exit(1)
+    print(f"Error: Could not import utils or config: {e}")
+    # Fallback defaults if config fails
+    LG_SA60 = 30.0
+    LG_XGA60 = 2.8
+    LG_PACE = 62.0
 
 project_root = os.path.dirname(src_dir)
 
@@ -73,6 +77,76 @@ def get_latest_stats(con, table_name, team_col, date_col, metrics, target_date):
     SELECT * FROM ranked WHERE rn = 1
     """
     return con.execute(query).df()
+
+def get_goalie_stats_l30(con, target_date):
+    """
+    Aggregates L30 day GSAx for all goalies.
+    """
+    # L30 Window
+    dt = datetime.strptime(target_date, "%Y-%m-%d")
+    start_dt = (dt - timedelta(days=30)).strftime("%Y-%m-%d")
+    
+    # We query fact_goalie_game_situation
+    # Note: player_id in situation table maps to goalie_id
+    query = f"""
+    SELECT 
+        player_id as goalie_id,
+        SUM(x_goals_against - goals_against) as sum_gsax,
+        SUM(toi_seconds) / 60.0 as sum_toi_mins
+    FROM fact_goalie_game_situation
+    WHERE situation = 'all'
+      AND game_date >= '{start_dt}' 
+      AND game_date < '{target_date}'
+    GROUP BY player_id
+    HAVING sum_toi_mins > 60
+    """
+    df = con.execute(query).df()
+    # Calculate Rate
+    df['goalie_gsax60_L30'] = df['sum_gsax'] / (df['sum_toi_mins'] / 60.0)
+    return df.set_index('goalie_id')[['goalie_gsax60_L30']].to_dict('index')
+
+def get_team_pace_l10(con, target_date):
+    """
+    Calculates L10 Game Pace (SOG For + SOG Against) per 60.
+    """
+    # 1. Get last 10 game IDs for each team
+    query = f"""
+    WITH recent_games AS (
+        SELECT 
+            team, 
+            game_id,
+            game_date,
+            ROW_NUMBER() OVER (PARTITION BY team ORDER BY game_date DESC) as rn
+        FROM fact_goalie_game_situation
+        WHERE situation = 'all' AND game_date < '{target_date}'
+    ),
+    game_stats AS (
+        SELECT
+            team,
+            game_id,
+            SUM(shots_against) as sa,
+            SUM(toi_seconds) / 60.0 as toi_mins
+        FROM fact_goalie_game_situation
+        WHERE situation = 'all'
+        GROUP BY team, game_id
+    )
+    SELECT
+        t1.team,
+        SUM(t1.sa + t2.sa) as total_events, -- My SA + Opp SA (My SF)
+        SUM(t1.toi_mins) as total_mins
+    FROM recent_games rg
+    JOIN game_stats t1 ON rg.team = t1.team AND rg.game_id = t1.game_id
+    JOIN game_stats t2 ON t1.game_id = t2.game_id AND t1.team != t2.team
+    WHERE rg.rn <= 10
+    GROUP BY t1.team
+    """
+    try:
+        df = con.execute(query).df()
+        df['pace_L10'] = df['total_events'] / (df['total_mins'] / 60.0)
+        return df.set_index('team')[['pace_L10']].to_dict('index')
+    except Exception as e:
+        print(f"Warning: Pace calc failed: {e}")
+        return {}
 
 def get_team_b2b_status(con, target_date_str):
     """
@@ -196,7 +270,6 @@ def main():
     
     # 3. Pre-fetch Data
     # A. Team Defense (Opponents)
-    # We fetch L10 stats for ALL teams to be safe/fast
     print("Fetching Team Defense Stats...")
     df_def = get_latest_stats(con, 'fact_team_defense_features', 'team', 'game_date', 
                               ['opp_sa60_L10', 'opp_xga60_L10'], game_date)
@@ -206,50 +279,74 @@ def main():
     print("Determining B2B Status...")
     b2b_teams = get_team_b2b_status(con, game_date)
     
-    # C. Goalie Stats (Latest for all goalies)
-    print("Fetching Goalie Stats...")
-    df_goalie_stats = get_latest_stats(con, 'fact_goalie_features', 'goalie_id', 'game_date', 
-                                       ['goalie_gsax60_L10', 'sum_xga_L10', 'sum_toi_L10'], game_date)
-    # Calculate xGA60
-    df_goalie_stats['goalie_xga60'] = df_goalie_stats.apply(
-        lambda r: r['sum_xga_L10'] / (r['sum_toi_L10'] / 3600) if r['sum_toi_L10'] > 0 else 0, axis=1
-    )
-    goalie_map = df_goalie_stats.set_index('goalie_id')[['goalie_gsax60_L10', 'goalie_xga60']].to_dict('index')
+    # C. Goalie Stats (L30 GSAx)
+    print("Fetching Goalie Stats (L30)...")
+    goalie_l30_map = get_goalie_stats_l30(con, game_date)
+
+    # D. Team Pace (L10)
+    print("Calculating Team Pace (L10)...")
+    pace_map = get_team_pace_l10(con, game_date)
 
     # 4. Build Context Rows
     context_rows = []
     
-    # Group Base by Team to minimize team-level lookups
-    # But we need to handle players individually or join. 
-    # Let's iterate unique teams from schedule.
+    team_context_cache = {} 
     
-    team_context_cache = {} # Team -> {OppTeam, opp_sa60, opp_xga60, goalie_gsax60, goalie_xga60, is_b2b}
+    import numpy as np # Ensure numpy is avail
     
     for _, row in df_schedule.iterrows():
         team = row['Team']
         opp = row['OppTeam']
         
-        # 1. Team B2B (Player's Team)
+        # 1. Team B2B
         is_b2b = 1 if team in b2b_teams else 0
         
-        # 2. Opponent Defense
-        opp_def = def_map.get(opp, {'opp_sa60_L10': 30.0, 'opp_xga60_L10': 2.5}) # Defaults
+        # 2. Opponent Defense (Raw)
+        opp_def = def_map.get(opp, {'opp_sa60_L10': LG_SA60, 'opp_xga60_L10': LG_XGA60})
+        raw_opp_sa60 = opp_def['opp_sa60_L10']
+        raw_opp_xga60 = opp_def['opp_xga60_L10']
         
         # 3. Opponent Goalie
         opp_b2b = opp in b2b_teams
         goalie_id = get_likely_goalie(con, opp, opp_b2b, game_date)
         
-        g_stats = {'goalie_gsax60_L10': 0.0, 'goalie_xga60': 2.5}
-        if goalie_id and goalie_id in goalie_map:
-            g_stats = goalie_map[goalie_id]
+        raw_gsax60 = 0.0
+        if goalie_id and goalie_id in goalie_l30_map:
+            raw_gsax60 = goalie_l30_map[goalie_id]['goalie_gsax60_L30']
             
+        # 4. Pace (Team Pace + Opp Pace)
+        # We average them or sum them?
+        # Logic: Expected Pace ~ (Pace_A + Pace_B) / 2? Or relative to league?
+        # Let's use (Team_Pace + Opp_Pace) / 2 as the Game Pace Estimate
+        p_team = pace_map.get(team, {'pace_L10': LG_PACE})['pace_L10']
+        p_opp = pace_map.get(opp, {'pace_L10': LG_PACE})['pace_L10']
+        game_pace = (p_team + p_opp) / 2.0
+        
+        # 5. Compute Deltas (Log Space)
+        # Avoid log(0)
+        eps = 1e-6
+        delta_opp_sog = np.log((raw_opp_sa60 + eps) / LG_SA60)
+        delta_opp_xga = np.log((raw_opp_xga60 + eps) / LG_XGA60)
+        delta_pace = np.log((game_pace + eps) / LG_PACE)
+        
+        # Goalie Delta (GSAx is already +/- 0.0, not a ratio)
+        # So we just pass raw_gsax60. The beta will handle scaling.
+        # But for consistency, let's call it delta_goalie
+        delta_goalie = raw_gsax60 
+        
         team_context_cache[team] = {
             'OppTeam': opp,
-            'opp_sa60': opp_def['opp_sa60_L10'],
-            'opp_xga60': opp_def['opp_xga60_L10'],
-            'goalie_gsax60': g_stats['goalie_gsax60_L10'],
-            'goalie_xga60': g_stats['goalie_xga60'],
-            'is_b2b': is_b2b
+            'is_b2b': is_b2b,
+            # Raw Fields (for Reference/Fallback)
+            'opp_sa60': raw_opp_sa60,
+            'opp_xga60': raw_opp_xga60,
+            'goalie_gsax60': raw_gsax60,
+            'game_pace': game_pace,
+            # Deltas (for Model)
+            'delta_opp_sog': delta_opp_sog,
+            'delta_opp_xga': delta_opp_xga,
+            'delta_goalie': delta_goalie,
+            'delta_pace': delta_pace
         }
         
     con.close()
@@ -263,18 +360,16 @@ def main():
         team = row['Team']
         
         if team in team_context_cache:
-            ctx = team_context_cache[team].copy() # Copy to avoid polluting shared team cache
+            ctx = team_context_cache[team].copy() 
             
             # CHECK OVERRIDES
             if player in overrides:
                 ovr = overrides[player]
                 # Documentation Constraint: projected_toi is REQUIRED for any override to take effect.
-                # "If pp_unit is specified but no projected_toi is provided, no change occurs."
                 if pd.notna(ovr['proj_toi']):
                     ctx['proj_toi'] = float(ovr['proj_toi'])
-                    ctx['is_manual_toi'] = 1 # Flag for audit
+                    ctx['is_manual_toi'] = 1 
                     
-                    # Only apply PP unit if TOI is also overridden
                     if pd.notna(ovr['pp_unit']):
                         ctx['pp_unit'] = int(ovr['pp_unit'])
             
@@ -282,14 +377,21 @@ def main():
                 'Player': player,
                 'Team': team,
                 'OppTeam': ctx['OppTeam'],
-                'opp_sa60': ctx['opp_sa60'],
-                'opp_xga60': ctx['opp_xga60'],
-                'goalie_gsax60': ctx['goalie_gsax60'],
-                'goalie_xga60': ctx['goalie_xga60'],
                 'is_b2b': ctx['is_b2b'],
+                # Overrides
                 'proj_toi': ctx.get('proj_toi', -1.0),
                 'pp_unit': ctx.get('pp_unit', -1),
-                'is_manual_toi': ctx.get('is_manual_toi', 0)
+                'is_manual_toi': ctx.get('is_manual_toi', 0),
+                # Deltas
+                'delta_opp_sog': round(ctx['delta_opp_sog'], 4),
+                'delta_opp_xga': round(ctx['delta_opp_xga'], 4),
+                'delta_goalie': round(ctx['delta_goalie'], 4),
+                'delta_pace': round(ctx['delta_pace'], 4),
+                # Raw (Optional, but good for debug)
+                'opp_sa60': round(ctx['opp_sa60'], 2),
+                'opp_xga60': round(ctx['opp_xga60'], 2),
+                'goalie_gsax60': round(ctx['goalie_gsax60'], 3),
+                'game_pace': round(ctx['game_pace'], 2)
             })
             
     if not final_rows:
