@@ -192,7 +192,8 @@ def main():
     if df_context is not None:
         # Columns of interest in context
         ctx_cols = ['Player', 'opp_sa60', 'opp_xga60', 'goalie_gsax60', 'goalie_xga60', 
-                    'implied_team_total', 'is_b2b', 'proj_toi', 'proj_pp_toi', 'OppTeam']
+                    'implied_team_total', 'is_b2b', 'proj_toi', 'proj_pp_toi', 'OppTeam',
+                    'pp_unit', 'is_manual_toi']
         
         # Filter only existing columns
         existing_ctx_cols = [c for c in ctx_cols if c in df_context.columns]
@@ -228,7 +229,9 @@ def main():
             'goalie_gsax60': row.get('goalie_gsax60'),
             'goalie_xga60': row.get('goalie_xga60'),
             'implied_team_total': row.get('implied_team_total'),
-            'is_b2b': row.get('is_b2b')
+            'is_b2b': row.get('is_b2b'),
+            'pp_unit': row.get('pp_unit'),
+            'proj_toi': row.get('proj_toi')
         }
         
         # Call shared engine
@@ -288,7 +291,8 @@ def main():
             'mult_goalie': round(calcs['mult_goalie'], 3),
             'mult_itt': round(calcs['mult_itt'], 3),
             'mult_b2b': round(calcs['mult_b2b'], 3),
-            'notes': row.get('notes', '')
+            'notes': row.get('notes', ''),
+            'is_manual_toi': row.get('is_manual_toi', 0)
         }
         results.append(res)
 
