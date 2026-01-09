@@ -85,8 +85,11 @@ def write_duckdb_table(table_name: str, df: pd.DataFrame) -> None:
         return
 
     ensure_dirs()
-    con = duckdb.connect(str(config.ODDS_ARCHIVE_DB_PATH))
-    con.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM df LIMIT 0")
-    con.execute(f"DELETE FROM {table_name}")
-    con.execute(f"INSERT INTO {table_name} SELECT * FROM df")
-    con.close()
+    try:
+        con = duckdb.connect(str(config.ODDS_ARCHIVE_DB_PATH))
+        con.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM df LIMIT 0")
+        con.execute(f"DELETE FROM {table_name}")
+        con.execute(f"INSERT INTO {table_name} SELECT * FROM df")
+        con.close()
+    except Exception as e:
+        print(f"Warning: Failed to write to DuckDB table {table_name}: {e}")

@@ -51,6 +51,9 @@ RAW_PROPS_COLUMNS = [
     "snippet",
     "content_hash",
     "record_hash",
+    "status_code",
+    "rejection_reason",
+    "entity_type",
 ]
 
 NORMALIZED_PROPS_COLUMNS = [
@@ -79,4 +82,7 @@ NORMALIZED_PROPS_COLUMNS = [
     "parser",
     "snippet",
     "content_hash",
+    "status_code",
+    "rejection_reason",
+    "entity_type",
 ]

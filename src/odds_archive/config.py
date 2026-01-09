@@ -24,12 +24,20 @@ REQUEST_TIMEOUT = float(os.getenv("ODDS_ARCHIVE_REQUEST_TIMEOUT", "20"))
 RATE_LIMIT_SECONDS = float(os.getenv("ODDS_ARCHIVE_RATE_LIMIT_SECONDS", "1.0"))
 MAX_URLS_PER_RUN = int(os.getenv("ODDS_ARCHIVE_MAX_URLS", "500"))
 
-ALLOWED_DOMAINS = [d.strip() for d in os.getenv("ODDS_ARCHIVE_ALLOWED_DOMAINS", "").split(",") if d.strip()]
+ALLOWED_DOMAINS = [
+    "thelines.com",
+    "covers.com",
+    "actionnetwork.com",
+    "pickswise.com",
+    "lineups.com",
+    "oddschecker.com",
+]
 
 DISCOVERY_SITEMAPS = [
-    u.strip()
-    for u in os.getenv("ODDS_ARCHIVE_SITEMAPS", "").split(",")
-    if u.strip()
+    "https://www.thelines.com/sitemap.xml",
+    "https://www.covers.com/sitemap.xml",
+    "https://www.actionnetwork.com/sitemap.xml",
+    "https://www.pickswise.com/sitemap.xml",
 ]
 DISCOVERY_INDEX_URLS = [
     u.strip()
@@ -53,4 +61,28 @@ KNOWN_BOOKMAKERS = [
     "fanatics",
     "circa",
     "barstool",
+]
+
+NEGATIVE_KEYWORDS = [
+    "mls",
+    "nba",
+    "nfl",
+    "mlb",
+    "corner",
+    "touchdown",
+    "inning",
+    "soccer",
+    "basketball",
+    "baseball",
+    "quarterback",
+    "receiver",
+]
+
+NHL_TEAMS = [
+    "ducks", "coyotes", "bruins", "sabres", "flames", "hurricanes",
+    "blackhawks", "avalanche", "blue jackets", "stars", "red wings",
+    "oilers", "panthers", "kings", "wild", "canadiens", "predators",
+    "devils", "islanders", "rangers", "senators", "flyers", "penguins",
+    "sharks", "kraken", "blues", "lightning", "maple leafs", "leafs",
+    "canucks", "golden knights", "capitals", "jets", "utah",
 ]

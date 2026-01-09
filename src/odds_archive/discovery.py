@@ -17,21 +17,40 @@ logger = logging.getLogger(__name__)
 def _filter_url(url: str) -> bool:
     if not url.startswith("http"):
         return False
+    lowered = url.lower()
     if config.ALLOWED_DOMAINS:
         domain = urlparse(url).netloc.lower()
-        return any(domain.endswith(allowed.lower()) for allowed in config.ALLOWED_DOMAINS)
+        if not any(domain.endswith(allowed.lower()) for allowed in config.ALLOWED_DOMAINS):
+            return False
+    
+    # Keyword filtering to focus on NHL props
+    keywords = ["nhl", "prop", "pick", "best-bet", "betting", "odds"]
+    if not any(kw in lowered for kw in keywords):
+        return False
+        
+    # Exclude some obvious non-article types
+    exclude = ["/video/", "/tag/", "/category/", "/author/", "sitemap"]
+    if any(ex in lowered for ex in exclude):
+        return False
+
     return True
 
 
 def discover_from_sitemap(url: str) -> List[str]:
     logger.info("Fetching sitemap %s", url)
-    response = requests.get(url, timeout=config.REQUEST_TIMEOUT, headers={"User-Agent": config.USER_AGENT})
-    response.raise_for_status()
-    content = response.text
     urls: List[str] = []
+    try:
+        response = requests.get(url, timeout=config.REQUEST_TIMEOUT, headers={"User-Agent": config.USER_AGENT})
+        response.raise_for_status()
+        content = response.text
+    except Exception as e:
+        logger.warning("Failed to fetch sitemap %s: %s", url, e)
+        return urls
+
     try:
         root = ET.fromstring(content)
     except ET.ParseError:
+        logger.warning("Failed to parse sitemap XML from %s", url)
         return urls
 
     namespace = ""

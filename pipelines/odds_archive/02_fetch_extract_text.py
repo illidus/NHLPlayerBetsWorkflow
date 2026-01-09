@@ -14,6 +14,7 @@ from odds_archive.utils import RobotsCache, ensure_dirs, setup_logger, utcnow, s
 def main() -> None:
     parser = argparse.ArgumentParser(description="Fetch and extract text from discovered URLs")
     parser.add_argument("--limit", type=int, default=config.MAX_URLS_PER_RUN)
+    parser.add_argument("--source", type=str, help="Filter by source domain")
     args = parser.parse_args()
 
     ensure_dirs()
@@ -27,6 +28,21 @@ def main() -> None:
         return
 
     candidates = url_lake[url_lake["status"].isin(["new", "error"])].copy()
+
+    if args.source:
+        candidates = candidates[candidates["source"] == args.source]
+    
+    # Strict NHL Player Prop Filter
+    candidates = candidates[
+        candidates["url"].str.contains("nhl", case=False) & 
+        candidates["url"].str.contains("prop|pick|bet|prediction", case=False)
+    ]
+    
+    # Filter out common non-article/non-prop paths if not already done in discovery
+    exclude = ["/video/", "/tag/", "/category/", "/author/", "/calculator/"]
+    for ex in exclude:
+        candidates = candidates[~candidates["url"].str.contains(ex, case=False)]
+        
     candidates = candidates.head(args.limit)
 
     robots_cache = RobotsCache(cache={})

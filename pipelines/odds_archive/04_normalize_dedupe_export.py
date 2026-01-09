@@ -49,19 +49,65 @@ def main() -> None:
         record_dict["side"] = normalize.normalize_side(record_dict.get("side"))
         record_dict["bookmaker"] = normalize.normalize_bookmaker(record_dict.get("bookmaker"))
         record_dict["record_hash"] = dedupe.build_record_hash(record_dict)
+        # Preserve new fields
+        record_dict["status_code"] = record_dict.get("status_code", "CANDIDATE_READY")
+        record_dict["rejection_reason"] = record_dict.get("rejection_reason")
+        
         normalized_records.append(record_dict)
 
     normalized_df = pd.DataFrame(normalized_records)
     normalized_df = normalized_df.drop_duplicates(subset=["record_hash"], keep="last")
     normalized_df = normalized_df.reindex(columns=NORMALIZED_PROPS_COLUMNS)
 
-    io.write_parquet(normalized_df, config.PROPS_PARQUET_PATH)
-    io.write_duckdb_table("fact_odds_archive_props", normalized_df)
+    # --- Tier 2 Transformation ---
+    tier2_records = []
+    for _, row in normalized_df.iterrows():
+         props = {
+             "player_name": row["player_name_clean"] or row["player_name_raw"],
+             "market": row["market"],
+             "line": float(row["line"]) if pd.notna(row["line"]) else None,
+             "side": row["side"],
+             "odds": int(row["odds"]) if pd.notna(row["odds"]) else None,
+             "bookmaker": row["bookmaker"]
+         }
+         
+         meta = {
+             "url": row["source_url"],
+             "source": row["source"],
+             "publish_ts": row["publish_ts"],
+             "crawl_ts": row["crawl_ts"]
+         }
+
+         tier2_records.append({
+             "mention_id": row["record_hash"],
+             "raw_text_snippet": row["snippet"],
+             "extracted_props": json.dumps(props, default=str),
+             "derived_game_date": row["game_date"],
+             "confidence_score": row["confidence"],
+             "status_code": row["status_code"],
+             "rejection_reason": row["rejection_reason"],
+             "metadata": json.dumps(meta, default=str),
+             "ingest_ts_utc": datetime.utcnow()
+         })
+    
+    tier2_df = pd.DataFrame(tier2_records)
+
+    # --- Routing ---
+    # Write to raw_editorial_mentions (Tier 2)
+    io.write_duckdb_table("raw_editorial_mentions", tier2_df)
+    
+    # Save parquet backup
+    io.write_parquet(tier2_df, config.DATA_DIR / "editorial_mentions.parquet")
+
+    # STOP writing to fact_odds_archive_props (Legacy)
+    # io.write_duckdb_table("fact_odds_archive_props", normalized_df) 
+    # io.write_parquet(normalized_df, config.PROPS_PARQUET_PATH)
 
     summary = {
         "run_ts": run_ts,
         "raw_records": len(raw_df),
         "normalized_records": len(normalized_df),
+        "tier2_records": len(tier2_df),
     }
     summary_path = config.RUN_LOGS_DIR / f"normalize_{run_ts}_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")

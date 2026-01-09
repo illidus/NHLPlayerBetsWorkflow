@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import Optional
@@ -19,9 +20,38 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     try:
+        # Handle some common formats or just let date_parser handle it
         return date_parser.parse(value)
     except (ValueError, TypeError):
         return None
+
+
+def _extract_json_ld_datetime(soup: BeautifulSoup, key: str) -> Optional[datetime]:
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string)
+            if isinstance(data, dict):
+                # Simple case
+                if data.get(key):
+                    parsed = _parse_datetime(data.get(key))
+                    if parsed:
+                        return parsed
+                # Graph case
+                if "@graph" in data:
+                    for item in data["@graph"]:
+                        if item.get(key):
+                            parsed = _parse_datetime(item.get(key))
+                            if parsed:
+                                return parsed
+            elif isinstance(data, list):
+                for item in data:
+                    if item.get(key):
+                        parsed = _parse_datetime(item.get(key))
+                        if parsed:
+                            return parsed
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return None
 
 
 def _extract_meta_datetime(soup: BeautifulSoup, keys: list[str]) -> Optional[datetime]:
@@ -63,8 +93,8 @@ def _extract_snippet(soup: BeautifulSoup, limit: int = 800) -> Optional[str]:
 def _extract_text(soup: BeautifulSoup) -> str:
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
-    text = soup.get_text(" ", strip=True)
-    return " ".join(text.split())
+    # Use newline as separator to preserve blocks/lines
+    return soup.get_text("\n", strip=True)
 
 
 def _infer_parse_hint(text: str) -> Optional[str]:
@@ -106,10 +136,15 @@ def fetch_page(url: str, robots_cache: RobotsCache) -> dict:
             "datePublished",
         ],
     )
+    if not publish_ts:
+        publish_ts = _extract_json_ld_datetime(soup, "datePublished")
+
     updated_ts = _extract_meta_datetime(
         soup,
         ["article:modified_time", "lastmod", "dateModified", "dc.date.modified"],
     )
+    if not updated_ts:
+        updated_ts = _extract_json_ld_datetime(soup, "dateModified")
 
     return {
         "http_status": response.status_code,
