@@ -268,11 +268,15 @@ def main():
             # CHECK OVERRIDES
             if player in overrides:
                 ovr = overrides[player]
+                # Documentation Constraint: projected_toi is REQUIRED for any override to take effect.
+                # "If pp_unit is specified but no projected_toi is provided, no change occurs."
                 if pd.notna(ovr['proj_toi']):
                     ctx['proj_toi'] = float(ovr['proj_toi'])
                     ctx['is_manual_toi'] = 1 # Flag for audit
-                if pd.notna(ovr['pp_unit']):
-                    ctx['pp_unit'] = int(ovr['pp_unit'])
+                    
+                    # Only apply PP unit if TOI is also overridden
+                    if pd.notna(ovr['pp_unit']):
+                        ctx['pp_unit'] = int(ovr['pp_unit'])
             
             final_rows.append({
                 'Player': player,
