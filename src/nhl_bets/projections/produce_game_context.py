@@ -146,6 +146,32 @@ def get_likely_goalie(con, team, opp_b2b, target_date):
             
     return starter_id
 
+def load_lineup_overrides():
+    """
+    Loads manual overrides from data/overrides/manual_lineup_overrides.csv.
+    Returns a dictionary keyed by Player Name (normalized) -> dict of overrides.
+    """
+    path = os.path.join(project_root, 'data', 'overrides', 'manual_lineup_overrides.csv')
+    if not os.path.exists(path):
+        return {}
+        
+    try:
+        df = pd.read_csv(path)
+        # Normalize keys
+        overrides = {}
+        for _, row in df.iterrows():
+            p_name = row['player_name'] # Normalize if needed
+            overrides[p_name] = {
+                'proj_toi': row.get('projected_toi'),
+                'pp_unit': row.get('pp_unit'),
+                'line_number': row.get('line_number')
+            }
+        print(f"Loaded {len(overrides)} lineup overrides.")
+        return overrides
+    except Exception as e:
+        print(f"Warning: Failed to load overrides: {e}")
+        return {}
+
 def main():
     print("--- Building Game Context ---")
     
@@ -162,6 +188,9 @@ def main():
         print("Base projections not found.")
         sys.exit(1)
     df_base = pd.read_csv(BASE_PROJ_PATH)
+    
+    # 2.5 Load Overrides
+    overrides = load_lineup_overrides()
     
     con = get_db_connection()
     
@@ -234,7 +263,17 @@ def main():
         team = row['Team']
         
         if team in team_context_cache:
-            ctx = team_context_cache[team]
+            ctx = team_context_cache[team].copy() # Copy to avoid polluting shared team cache
+            
+            # CHECK OVERRIDES
+            if player in overrides:
+                ovr = overrides[player]
+                if pd.notna(ovr['proj_toi']):
+                    ctx['proj_toi'] = float(ovr['proj_toi'])
+                    ctx['is_manual_toi'] = 1 # Flag for audit
+                if pd.notna(ovr['pp_unit']):
+                    ctx['pp_unit'] = int(ovr['pp_unit'])
+            
             final_rows.append({
                 'Player': player,
                 'Team': team,
@@ -244,9 +283,9 @@ def main():
                 'goalie_gsax60': ctx['goalie_gsax60'],
                 'goalie_xga60': ctx['goalie_xga60'],
                 'is_b2b': ctx['is_b2b'],
-                # Pass through TOI projections if we had them, but Base has L10 TOI.
-                # single_game_probs.py expects 'proj_toi' if available, otherwise uses Base TOI.
-                # We don't have better TOI projections here yet.
+                'proj_toi': ctx.get('proj_toi', -1.0),
+                'pp_unit': ctx.get('pp_unit', -1),
+                'is_manual_toi': ctx.get('is_manual_toi', 0)
             })
             
     if not final_rows:
