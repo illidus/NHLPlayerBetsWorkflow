@@ -193,7 +193,8 @@ def main():
         # Columns of interest in context
         ctx_cols = ['Player', 'opp_sa60', 'opp_xga60', 'goalie_gsax60', 'goalie_xga60', 
                     'implied_team_total', 'is_b2b', 'proj_toi', 'proj_pp_toi', 'OppTeam',
-                    'pp_unit', 'is_manual_toi']
+                    'pp_unit', 'is_manual_toi',
+                    'delta_opp_sog', 'delta_opp_xga', 'delta_goalie', 'delta_pace']
         
         # Filter only existing columns
         existing_ctx_cols = [c for c in ctx_cols if c in df_context.columns]
@@ -231,7 +232,11 @@ def main():
             'implied_team_total': row.get('implied_team_total'),
             'is_b2b': row.get('is_b2b'),
             'pp_unit': row.get('pp_unit'),
-            'proj_toi': row.get('proj_toi')
+            'proj_toi': row.get('proj_toi'),
+            'delta_opp_sog': row.get('delta_opp_sog'),
+            'delta_opp_xga': row.get('delta_opp_xga'),
+            'delta_goalie': row.get('delta_goalie'),
+            'delta_pace': row.get('delta_pace')
         }
         
         # Call shared engine
@@ -291,6 +296,13 @@ def main():
             'mult_goalie': round(calcs['mult_goalie'], 3),
             'mult_itt': round(calcs['mult_itt'], 3),
             'mult_b2b': round(calcs['mult_b2b'], 3),
+            'mult_pace': round(calcs.get('mult_pace', 1.0), 3),
+            
+            'delta_opp_sog': row.get('delta_opp_sog', 0.0),
+            'delta_opp_xga': row.get('delta_opp_xga', 0.0),
+            'delta_goalie': row.get('delta_goalie', 0.0),
+            'delta_pace': row.get('delta_pace', 0.0),
+
             'notes': row.get('notes', ''),
             'is_manual_toi': row.get('is_manual_toi', 0)
         }

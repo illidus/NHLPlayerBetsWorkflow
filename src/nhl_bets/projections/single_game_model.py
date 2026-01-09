@@ -351,6 +351,7 @@ def compute_game_probs(
         'mult_goalie': mult_goalie,
         'mult_itt': mult_itt,
         'mult_b2b': mult_b2b,
+        'mult_pace': mult_pace,
         'toi_factor': toi_factor
     }
     
