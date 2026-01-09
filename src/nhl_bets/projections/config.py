@@ -4,7 +4,8 @@ BETAS = {
     'opp_g': 0.15,        # Opponent Goals/Points impact
     'goalie': 0.20,       # Goalie impact on Goals
     'itt': 0.50,          # Implied Team Total impact
-    'b2b': -0.05          # Back-to-back negative impact (log-space coeff or linear multiplier power)
+    'b2b': -0.05,         # Back-to-back negative impact (log-space coeff or linear multiplier power)
+    'pace': 0.50          # Impact of game pace on SOG/Events
 }
 
 # Negative Binomial Dispersion (Alpha) defaults
@@ -17,6 +18,7 @@ ALPHAS = {
 # League Baselines (Approximate 2023-24 values, can be overridden)
 LG_SA60 = 30.0
 LG_XGA60 = 2.8
+LG_PACE = 62.0 # Approx total SOG per game (both teams)
 ITT_BASE = 3.0
 
 import os
