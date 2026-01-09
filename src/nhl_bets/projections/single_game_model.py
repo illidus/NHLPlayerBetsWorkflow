@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import logging
-from .config import BETAS, ALPHAS, LG_SA60, LG_XGA60, ITT_BASE
+from .config import BETAS, ALPHAS, LG_SA60, LG_XGA60, ITT_BASE, LG_PACE
 from .distributions import calculate_poisson_probs, calculate_nbinom_probs
 import joblib
 import os
@@ -237,42 +237,61 @@ def compute_game_probs(
     mult_goalie = 1.0
     mult_itt = 1.0
     mult_b2b = 1.0
+    mult_pace = 1.0
     
     def is_valid(val):
         return val is not None and not (isinstance(val, float) and np.isnan(val)) and not pd.isna(val)
 
     if context_data:
-        # Opponent SOG/BLK
-        val = context_data.get('opp_sa60')
-        if is_valid(val):
-             mult_opp_sog = (val / LG_SA60) ** BETAS['opp_sog']
+        # --- Delta-Based Multipliers (New Logic) ---
+        # Prioritize pre-computed deltas if available
         
-        # Opponent Scoring (Goals/Points)
-        val = context_data.get('opp_xga60')
-        if is_valid(val):
-             mult_opp_g = (val / LG_XGA60) ** BETAS['opp_g']
+        # 1. Opponent SOG (Defensive Strength vs Shots)
+        if 'delta_opp_sog' in context_data:
+            mult_opp_sog = np.exp(BETAS['opp_sog'] * context_data['delta_opp_sog'])
+        else:
+            # Fallback to Raw
+            val = context_data.get('opp_sa60')
+            if is_valid(val):
+                 mult_opp_sog = (val / LG_SA60) ** BETAS['opp_sog']
+        
+        # 2. Opponent Scoring (Defensive Strength vs Goals)
+        if 'delta_opp_xga' in context_data:
+            mult_opp_g = np.exp(BETAS['opp_g'] * context_data['delta_opp_xga'])
+        else:
+            val = context_data.get('opp_xga60')
+            if is_valid(val):
+                 mult_opp_g = (val / LG_XGA60) ** BETAS['opp_g']
              
-        # Goalie
-        val = context_data.get('goalie_gsax60')
-        if is_valid(val):
-            g_xga = context_data.get('goalie_xga60')
-            if not is_valid(g_xga): g_xga = LG_XGA60
-            
-            if g_xga > 0:
-                # Theory: Mult_goalie = (1 - (gsax60 / xga60)) ** beta_goalie
-                # Clamp result to [0.5, 1.5]
-                raw_m = 1 - (val / g_xga)
-                # Avoid negative base for power if gsax60 > xga60 significantly (rare but possible)
-                raw_m = max(0.1, raw_m) 
-                mult_goalie = raw_m ** BETAS['goalie']
-                mult_goalie = max(0.5, min(1.5, mult_goalie))
+        # 3. Goalie (Impact on Goals)
+        # Delta is GSAx/60 (positive is good). Beta is positive magnitude.
+        # Effect should be negative (Good Goalie -> Lower Goals).
+        if 'delta_goalie' in context_data:
+            # GSAx is already additive relative to expected. 
+            # We treat it as exponential suppression.
+            mult_goalie = np.exp(-BETAS['goalie'] * context_data['delta_goalie'])
+            mult_goalie = max(0.5, min(1.5, mult_goalie))
+        else:
+            val = context_data.get('goalie_gsax60')
+            if is_valid(val):
+                g_xga = context_data.get('goalie_xga60')
+                if not is_valid(g_xga): g_xga = LG_XGA60
+                if g_xga > 0:
+                    raw_m = 1 - (val / g_xga)
+                    raw_m = max(0.1, raw_m) 
+                    mult_goalie = raw_m ** BETAS['goalie']
+                    mult_goalie = max(0.5, min(1.5, mult_goalie))
+        
+        # 4. Pace (New)
+        if 'delta_pace' in context_data:
+            mult_pace = np.exp(BETAS['pace'] * context_data['delta_pace'])
                 
-        # ITT
+        # 5. ITT (Implied Team Total)
         val = context_data.get('implied_team_total')
         if is_valid(val):
              mult_itt = (val / ITT_BASE) ** BETAS['itt']
              
-        # B2B
+        # 6. B2B
         val = context_data.get('is_b2b')
         if is_valid(val) and val:
              # Check if true-like
@@ -280,12 +299,14 @@ def compute_game_probs(
                  mult_b2b = np.exp(BETAS['b2b'])
 
     # 3. Calculate Adjusted Mu
-    # SOG / BLK: Affected by Opp SOG, B2B
-    mu_adj_sog = calculate_adjusted_mu(mu_base_sog, mult_opp_sog * mult_b2b, toi_factor)
-    mu_adj_blocks = calculate_adjusted_mu(mu_base_blocks, mult_opp_sog * mult_b2b, toi_factor)
+    # Pace affects EVERYTHING (more events -> more stats)
     
-    # Scoring: Affected by Opp G, Goalie, ITT, B2B
-    scoring_mult = mult_opp_g * mult_goalie * mult_itt * mult_b2b
+    # SOG / BLK: Affected by Opp SOG, B2B, Pace
+    mu_adj_sog = calculate_adjusted_mu(mu_base_sog, mult_opp_sog * mult_b2b * mult_pace, toi_factor)
+    mu_adj_blocks = calculate_adjusted_mu(mu_base_blocks, mult_opp_sog * mult_b2b * mult_pace, toi_factor)
+    
+    # Scoring: Affected by Opp G, Goalie, ITT, B2B, Pace
+    scoring_mult = mult_opp_g * mult_goalie * mult_itt * mult_b2b * mult_pace
     mu_adj_goals = calculate_adjusted_mu(mu_base_goals, scoring_mult, toi_factor)
     
     # If enhanced logic was used, mu_base already includes proj_toi adjustment
