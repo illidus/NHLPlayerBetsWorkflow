@@ -193,7 +193,7 @@ def main():
         # Columns of interest in context
         ctx_cols = ['Player', 'opp_sa60', 'opp_xga60', 'goalie_gsax60', 'goalie_xga60', 
                     'implied_team_total', 'is_b2b', 'proj_toi', 'proj_pp_toi', 'OppTeam',
-                    'pp_unit', 'is_manual_toi',
+                    'pp_unit', 'is_manual_toi', 'proj_toi_model',
                     'delta_opp_sog', 'delta_opp_xga', 'delta_goalie', 'delta_pace']
         
         # Filter only existing columns
@@ -304,7 +304,8 @@ def main():
             'delta_pace': row.get('delta_pace', 0.0),
 
             'notes': row.get('notes', ''),
-            'is_manual_toi': row.get('is_manual_toi', 0)
+            'is_manual_toi': row.get('is_manual_toi', 0),
+            'proj_toi_model': row.get('proj_toi_model', -1.0)
         }
         results.append(res)
 
