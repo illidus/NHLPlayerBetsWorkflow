@@ -3,6 +3,7 @@ import duckdb
 import os
 import sys
 import argparse
+import joblib
 from datetime import datetime, timedelta
 
 # Add src to path for nhl_bets import
@@ -27,6 +28,7 @@ DB_PATH = os.path.join(project_root, 'data', 'db', 'nhl_backtest.duckdb')
 PROPS_PATH = os.path.join(project_root, 'data', 'raw', 'nhl_player_props_all.csv')
 BASE_PROJ_PATH = os.path.join(project_root, 'outputs', 'projections', 'BaseSingleGameProjections.csv')
 OUTPUT_PATH = os.path.join(project_root, 'outputs', 'projections', 'GameContext.csv')
+MODEL_PATH = os.path.join(project_root, 'data', 'models', 'toi_model.pkl')
 
 def get_db_connection():
     return duckdb.connect(DB_PATH)
@@ -246,6 +248,91 @@ def load_lineup_overrides():
         print(f"Warning: Failed to load overrides: {e}")
         return {}
 
+def get_player_id_map(con):
+    """Maps Player Name -> Player ID using dim_players."""
+    df = con.execute("SELECT player_name, player_id FROM dim_players").df()
+    return df.set_index('player_name')['player_id'].to_dict()
+
+def get_player_recent_features(con, game_date):
+    """
+    Fetches recent features (L10, L5, Last TOI) for all players.
+    Returns dict: player_id -> feature_dict
+    """
+    query = f"""
+    WITH base AS (
+        SELECT 
+            player_id,
+            game_date,
+            avg_toi_minutes_L10 as toi_L10,
+            ev_toi_minutes_L5 as ev_toi_L5,
+            pp_toi_minutes_L20 as pp_toi_L20,
+            toi_minutes as last_toi, -- We want the PREVIOUS game's TOI
+            LAG(toi_minutes, 1) OVER (PARTITION BY player_id ORDER BY game_date) as last_toi_2,
+            ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY game_date DESC) as rn
+        FROM fact_player_game_features
+        WHERE game_date < '{game_date}'
+    )
+    SELECT * FROM base WHERE rn = 1
+    """
+    try:
+        df = con.execute(query).df()
+        # For 'last_toi', we actually grabbed the TOI from the most recent game (rn=1).
+        # So 'last_toi' column IS the lagged value relative to *tomorrow*.
+        # 'last_toi_2' is the game before that.
+        return df.set_index('player_id').to_dict('index')
+    except Exception as e:
+        print(f"Warning: Failed to fetch player features: {e}")
+        return {}
+
+def predict_toi(player_row, feature_map, pid_map, model):
+    """
+    Predicts TOI using the loaded model.
+    """
+    if model is None:
+        return None
+        
+    p_name = player_row.get('Player')
+    if p_name not in pid_map:
+        return None
+        
+    pid = pid_map[p_name]
+    if pid not in feature_map:
+        return None
+        
+    feats = feature_map[pid]
+    
+    # Feature Vector must match training: ['toi_L10', 'ev_toi_L5', 'pp_toi_L20', 'last_toi', 'last_toi_2', 'is_home']
+    # Handle missing values (model handles NaNs, but let's be safe)
+    try:
+        # Check if last_toi is valid
+        if pd.isna(feats.get('last_toi')):
+            return None
+            
+        is_home = 1 # Assuming neutral/home if unknown, or check schedule? 
+        # Schedule has 'IsHome'.
+        # We can pass is_home from caller context if needed, but for now defaulting 0 or extracting from row if avail.
+        # But 'df_base' doesn't usually have is_home. produce_game_context schedule loop does.
+        # Wait, predict_toi is called inside the loop where we KNOW is_home?
+        # No, predict_toi is called per player.
+        # Let's assume neutral (0) or add is_home to player_row in the loop.
+        
+        # Actually, df_schedule has IsHome. We can pass it.
+        is_home = player_row.get('is_home', 0)
+
+        vector = [[
+            feats.get('toi_L10'),
+            feats.get('ev_toi_L5'),
+            feats.get('pp_toi_L20'),
+            feats.get('last_toi'),
+            feats.get('last_toi_2'),
+            is_home
+        ]]
+        
+        pred = model.predict(vector)[0]
+        return round(pred, 2)
+    except Exception:
+        return None
+
 def main():
     print("--- Building Game Context ---")
     
@@ -265,6 +352,15 @@ def main():
     
     # 2.5 Load Overrides
     overrides = load_lineup_overrides()
+    
+    # 2.6 Load TOI Model
+    toi_model = None
+    if os.path.exists(MODEL_PATH):
+        try:
+            toi_model = joblib.load(MODEL_PATH)
+            print(f"Loaded TOI Model from {MODEL_PATH}")
+        except Exception as e:
+            print(f"Failed to load TOI model: {e}")
     
     con = get_db_connection()
     
@@ -286,6 +382,11 @@ def main():
     # D. Team Pace (L10)
     print("Calculating Team Pace (L10)...")
     pace_map = get_team_pace_l10(con, game_date)
+    
+    # E. Player Features for TOI Model
+    print("Fetching Player Features for TOI Model...")
+    pid_map = get_player_id_map(con)
+    player_feats = get_player_recent_features(con, game_date)
 
     # 4. Build Context Rows
     context_rows = []
@@ -293,6 +394,10 @@ def main():
     team_context_cache = {} 
     
     import numpy as np # Ensure numpy is avail
+    
+    # Helper to find if team is home/away in schedule
+    # df_schedule has Team, OppTeam, IsHome
+    team_home_map = df_schedule.set_index('Team')['IsHome'].to_dict()
     
     for _, row in df_schedule.iterrows():
         team = row['Team']
@@ -362,26 +467,56 @@ def main():
         if team in team_context_cache:
             ctx = team_context_cache[team].copy() 
             
-            # CHECK OVERRIDES
+            # --- TOI RESOLUTION ---
+            # 1. Base (Rolling Avg from Moneypuck or similar)
+            # Use 'TOI' from base file (usually L10/L20 avg)
+            base_toi = row.get('TOI', 15.0)
+            
+            # 2. Model Prediction
+            proj_toi_model = -1.0
+            if toi_model:
+                # Prepare row for prediction (needs is_home)
+                row_for_pred = row.to_dict()
+                row_for_pred['is_home'] = team_home_map.get(team, 0)
+                pred = predict_toi(row_for_pred, player_feats, pid_map, toi_model)
+                if pred:
+                    proj_toi_model = pred
+            
+            # 3. Overrides
+            proj_toi_override = -1.0
+            is_manual = 0
             if player in overrides:
                 ovr = overrides[player]
-                # Documentation Constraint: projected_toi is REQUIRED for any override to take effect.
                 if pd.notna(ovr['proj_toi']):
-                    ctx['proj_toi'] = float(ovr['proj_toi'])
-                    ctx['is_manual_toi'] = 1 
-                    
+                    proj_toi_override = float(ovr['proj_toi'])
+                    is_manual = 1
                     if pd.notna(ovr['pp_unit']):
                         ctx['pp_unit'] = int(ovr['pp_unit'])
+
+            # 4. Resolve Final
+            # Hierarchy: Override > Model > Base
+            if is_manual:
+                proj_toi_final = proj_toi_override
+            elif proj_toi_model > 0:
+                proj_toi_final = proj_toi_model
+            else:
+                proj_toi_final = base_toi # Fallback to rolling avg
+            
+            # Update Context
+            ctx['proj_toi'] = proj_toi_final
+            ctx['proj_toi_model'] = proj_toi_model
+            ctx['is_manual_toi'] = is_manual
             
             final_rows.append({
                 'Player': player,
                 'Team': team,
                 'OppTeam': ctx['OppTeam'],
                 'is_b2b': ctx['is_b2b'],
-                # Overrides
-                'proj_toi': ctx.get('proj_toi', -1.0),
+                # TOI Fields
+                'proj_toi': ctx['proj_toi'],
+                'proj_toi_model': ctx['proj_toi_model'],
+                'is_manual_toi': ctx['is_manual_toi'],
                 'pp_unit': ctx.get('pp_unit', -1),
-                'is_manual_toi': ctx.get('is_manual_toi', 0),
                 # Deltas
                 'delta_opp_sog': round(ctx['delta_opp_sog'], 4),
                 'delta_opp_xga': round(ctx['delta_opp_xga'], 4),
