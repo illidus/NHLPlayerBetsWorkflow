@@ -334,7 +334,15 @@ def predict_toi(player_row, feature_map, pid_map, model):
         return None
 
 def main():
-    print("--- Building Game Context ---")
+    parser = argparse.ArgumentParser(description="Produce Game Context")
+    parser.add_argument("--use_team_metrics", type=int, default=1, help="Enable Team Context Deltas (1/0)")
+    parser.add_argument("--use_clusters", type=int, default=1, help="Enable Player Clustering (1/0)")
+    args = parser.parse_args()
+    
+    use_team_metrics = args.use_team_metrics == 1
+    use_clusters = args.use_clusters == 1
+    
+    print(f"--- Building Game Context (TeamMetrics={use_team_metrics}, Clusters={use_clusters}) ---")
     
     # 1. Load Schedule
     df_schedule, game_date = load_schedule_from_props()
@@ -406,38 +414,41 @@ def main():
         # 1. Team B2B
         is_b2b = 1 if team in b2b_teams else 0
         
-        # 2. Opponent Defense (Raw)
-        opp_def = def_map.get(opp, {'opp_sa60_L10': LG_SA60, 'opp_xga60_L10': LG_XGA60})
-        raw_opp_sa60 = opp_def['opp_sa60_L10']
-        raw_opp_xga60 = opp_def['opp_xga60_L10']
-        
-        # 3. Opponent Goalie
-        opp_b2b = opp in b2b_teams
-        goalie_id = get_likely_goalie(con, opp, opp_b2b, game_date)
-        
-        raw_gsax60 = 0.0
-        if goalie_id and goalie_id in goalie_l30_map:
-            raw_gsax60 = goalie_l30_map[goalie_id]['goalie_gsax60_L30']
+        if use_team_metrics:
+            # 2. Opponent Defense (Raw)
+            opp_def = def_map.get(opp, {'opp_sa60_L10': LG_SA60, 'opp_xga60_L10': LG_XGA60})
+            raw_opp_sa60 = opp_def['opp_sa60_L10']
+            raw_opp_xga60 = opp_def['opp_xga60_L10']
             
-        # 4. Pace (Team Pace + Opp Pace)
-        # We average them or sum them?
-        # Logic: Expected Pace ~ (Pace_A + Pace_B) / 2? Or relative to league?
-        # Let's use (Team_Pace + Opp_Pace) / 2 as the Game Pace Estimate
-        p_team = pace_map.get(team, {'pace_L10': LG_PACE})['pace_L10']
-        p_opp = pace_map.get(opp, {'pace_L10': LG_PACE})['pace_L10']
-        game_pace = (p_team + p_opp) / 2.0
-        
-        # 5. Compute Deltas (Log Space)
-        # Avoid log(0)
-        eps = 1e-6
-        delta_opp_sog = np.log((raw_opp_sa60 + eps) / LG_SA60)
-        delta_opp_xga = np.log((raw_opp_xga60 + eps) / LG_XGA60)
-        delta_pace = np.log((game_pace + eps) / LG_PACE)
-        
-        # Goalie Delta (GSAx is already +/- 0.0, not a ratio)
-        # So we just pass raw_gsax60. The beta will handle scaling.
-        # But for consistency, let's call it delta_goalie
-        delta_goalie = raw_gsax60 
+            # 3. Opponent Goalie
+            opp_b2b = opp in b2b_teams
+            goalie_id = get_likely_goalie(con, opp, opp_b2b, game_date)
+            
+            raw_gsax60 = 0.0
+            if goalie_id and goalie_id in goalie_l30_map:
+                raw_gsax60 = goalie_l30_map[goalie_id]['goalie_gsax60_L30']
+                
+            # 4. Pace (Team Pace + Opp Pace)
+            p_team = pace_map.get(team, {'pace_L10': LG_PACE})['pace_L10']
+            p_opp = pace_map.get(opp, {'pace_L10': LG_PACE})['pace_L10']
+            game_pace = (p_team + p_opp) / 2.0
+            
+            # 5. Compute Deltas (Log Space)
+            eps = 1e-6
+            delta_opp_sog = np.log((raw_opp_sa60 + eps) / LG_SA60)
+            delta_opp_xga = np.log((raw_opp_xga60 + eps) / LG_XGA60)
+            delta_pace = np.log((game_pace + eps) / LG_PACE)
+            delta_goalie = raw_gsax60 
+        else:
+            # Defaults (No Impact)
+            raw_opp_sa60 = LG_SA60
+            raw_opp_xga60 = LG_XGA60
+            raw_gsax60 = 0.0
+            game_pace = LG_PACE
+            delta_opp_sog = 0.0
+            delta_opp_xga = 0.0
+            delta_pace = 0.0
+            delta_goalie = 0.0
         
         team_context_cache[team] = {
             'OppTeam': opp,
@@ -466,6 +477,27 @@ def main():
         
         if team in team_context_cache:
             ctx = team_context_cache[team].copy() 
+            
+            # --- CLUSTERING ---
+            cluster_id = 'default'
+            if use_clusters:
+                # Heuristic Clustering based on Base SOG Rate (SOG Per Game / TOI * 60)?
+                # Base file has 'SOG Per Game' and 'TOI'.
+                # Let's use simpler: SOG Per Game > 3.0 -> Volume.
+                # Or SOG/60.
+                sog_per_game = row.get('SOG Per Game', 0.0)
+                toi = row.get('TOI', 15.0)
+                if toi > 0:
+                    sog_60 = (sog_per_game / toi) * 60.0
+                else:
+                    sog_60 = 0.0
+                
+                if sog_60 >= 10.0:
+                    cluster_id = 'volume_shooter'
+                elif sog_60 >= 6.0:
+                    cluster_id = 'average_shooter'
+                else:
+                    cluster_id = 'low_volume'
             
             # --- TOI RESOLUTION ---
             # 1. Base (Rolling Avg from Moneypuck or similar)
@@ -517,6 +549,7 @@ def main():
                 'proj_toi_model': ctx['proj_toi_model'],
                 'is_manual_toi': ctx['is_manual_toi'],
                 'pp_unit': ctx.get('pp_unit', -1),
+                'cluster_id': cluster_id,
                 # Deltas
                 'delta_opp_sog': round(ctx['delta_opp_sog'], 4),
                 'delta_opp_xga': round(ctx['delta_opp_xga'], 4),

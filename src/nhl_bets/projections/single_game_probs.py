@@ -174,6 +174,7 @@ def process_base_projections(df):
 def main():
     parser = argparse.ArgumentParser(description="Generate Single Game Probabilities")
     parser.add_argument("--date", help="Game Date (YYYY-MM-DD)", default=None)
+    parser.add_argument("--calibration_mode", choices=['global', 'segmented'], default='global', help="Calibration Mode")
     args = parser.parse_args()
 
     game_date = args.date
@@ -194,7 +195,8 @@ def main():
         ctx_cols = ['Player', 'opp_sa60', 'opp_xga60', 'goalie_gsax60', 'goalie_xga60', 
                     'implied_team_total', 'is_b2b', 'proj_toi', 'proj_pp_toi', 'OppTeam',
                     'pp_unit', 'is_manual_toi', 'proj_toi_model',
-                    'delta_opp_sog', 'delta_opp_xga', 'delta_goalie', 'delta_pace']
+                    'delta_opp_sog', 'delta_opp_xga', 'delta_goalie', 'delta_pace',
+                    'cluster_id']
         
         # Filter only existing columns
         existing_ctx_cols = [c for c in ctx_cols if c in df_context.columns]
@@ -236,7 +238,9 @@ def main():
             'delta_opp_sog': row.get('delta_opp_sog'),
             'delta_opp_xga': row.get('delta_opp_xga'),
             'delta_goalie': row.get('delta_goalie'),
-            'delta_pace': row.get('delta_pace')
+            'delta_pace': row.get('delta_pace'),
+            'cluster_id': row.get('cluster_id'),
+            'calibration_mode': args.calibration_mode
         }
         
         # Call shared engine

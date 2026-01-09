@@ -7,14 +7,43 @@ import joblib
 import os
 from scipy.special import logit
 
-def apply_posthoc_calibration(prob, market, model_dir="data/models/calibrators_posthoc/"):
+def apply_posthoc_calibration(prob, market, context_data=None, model_dir="data/models/calibrators_posthoc/"):
     """
     Applies a pre-trained post-hoc calibrator to a raw probability.
+    Supports 'segmented' mode if context_data provides 'calibration_mode'='segmented' and 'position'.
     """
     if market not in ['ASSISTS', 'POINTS']:
         return prob
-        
-    model_path = os.path.join(model_dir, f"calib_posthoc_{market.upper()}.joblib")
+    
+    # Determine Model Filename
+    mode = 'global'
+    segment = ''
+    if context_data:
+        mode = context_data.get('calibration_mode', 'global')
+        if mode == 'segmented':
+            # Segment by Position (F/D)
+            # We need position passed in context_data or player_data.
+            # Usually player_data has position. 
+            # Context data is passed here. We should ensure 'position' is in context if we want to use it.
+            # Actually, compute_game_probs has player_data. Let's pass player_data['Pos'] to this func?
+            # Or assume context_data has it.
+            pos = context_data.get('position', 'F') # Default F
+            if pos == 'D':
+                segment = '_D'
+            else:
+                segment = '_F'
+    
+    # Filename: calib_posthoc_{MARKET}{_SEGMENT}.joblib
+    # Global: calib_posthoc_ASSISTS.joblib
+    # Segmented: calib_posthoc_ASSISTS_D.joblib
+    
+    filename = f"calib_posthoc_{market.upper()}{segment}.joblib"
+    model_path = os.path.join(model_dir, filename)
+    
+    # Fallback to global if segmented missing
+    if not os.path.exists(model_path) and mode == 'segmented':
+        model_path = os.path.join(model_dir, f"calib_posthoc_{market.upper()}.joblib")
+
     if not os.path.exists(model_path):
         return prob
         
@@ -53,21 +82,6 @@ def compute_game_probs(
 ):
     """
     Computes probabilities for a single player-game.
-    
-    player_data: dict or series containing:
-        - Player, Team, Position (metadata)
-        - G, A, PTS, SOG, BLK (base stats, expected to be per-game averages or projections)
-        - TOI (base toi) - optional
-        - proj_toi (projected toi) - optional
-        
-    context_data: dict or series containing:
-        - opp_sa60, opp_xga60 (metrics)
-        - goalie_gsax60, goalie_xga60 (metrics)
-        - implied_team_total
-        - is_b2b
-        
-    Returns:
-        dict containing 'mu' values and 'p_over' values for all markets.
     """
     
     # 1. Extract Base Stats
@@ -316,16 +330,33 @@ def compute_game_probs(
     mu_adj_points = calculate_adjusted_mu(mu_base_points, scoring_mult, toi_factor_ast_pts)
     
     # 4. Calculate Probabilities
+    
+    # --- CLUSTER ADJUSTMENTS (Alpha/Variance) ---
+    alpha_sog = ALPHAS['SOG']
+    if context_data:
+        cluster = context_data.get('cluster_id', 'default')
+        if cluster == 'volume_shooter':
+            # Volume shooters are more consistent -> Lower Dispersion
+            alpha_sog *= 0.8
+        elif cluster == 'low_volume':
+            # Low volume are more volatile -> Higher Dispersion
+            alpha_sog *= 1.2
+            
     probs_goals = calculate_poisson_probs(mu_adj_goals, max_k=3)
     probs_assists = calculate_poisson_probs(mu_adj_assists, max_k=3)
     probs_points = calculate_poisson_probs(mu_adj_points, max_k=3)
     
-    probs_sog = calculate_nbinom_probs(mu_adj_sog, ALPHAS['SOG'], max_k=5)
+    probs_sog = calculate_nbinom_probs(mu_adj_sog, alpha_sog, max_k=5)
     probs_blocks = calculate_nbinom_probs(mu_adj_blocks, ALPHAS['BLK'], max_k=4)
     
     # --- POST-HOC CALIBRATION (Integration Phase 8) ---
-    probs_assists_calib = {k: apply_posthoc_calibration(v, 'ASSISTS') for k, v in probs_assists.items()}
-    probs_points_calib = {k: apply_posthoc_calibration(v, 'POINTS') for k, v in probs_points.items()}
+    # Prepare data for segmentation (pass position from player_data)
+    if context_data and 'position' not in context_data:
+        # Inject position from player_data if missing
+        context_data['position'] = player_data.get('Pos', 'F')
+        
+    probs_assists_calib = {k: apply_posthoc_calibration(v, 'ASSISTS', context_data) for k, v in probs_assists.items()}
+    probs_points_calib = {k: apply_posthoc_calibration(v, 'POINTS', context_data) for k, v in probs_points.items()}
 
     # 5. Pack Results
     result = {
