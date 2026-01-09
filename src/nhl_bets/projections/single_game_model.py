@@ -116,6 +116,19 @@ def compute_game_probs(
     if ev_ast_60 >= 0 and (ev_toi_L20 + pp_toi_L20) > 0:
         # Split proj_toi based on historical ratio
         pp_ratio = pp_toi_L20 / (ev_toi_L20 + pp_toi_L20)
+        
+        # --- PP UNIT OVERRIDE LOGIC ---
+        # If manual overrides provided pp_unit, adjust ratio if history is stale
+        pp_unit = get_val(context_data if context_data else {}, 'pp_unit', -1)
+        if pp_unit == 1:
+            # If promoted to PP1 but historical ratio is low (e.g. was PP2/None), boost it.
+            if pp_ratio < 0.40: 
+                pp_ratio = 0.50 
+        elif pp_unit == 2:
+            # If PP2, ensure some floor
+            if pp_ratio < 0.10:
+                pp_ratio = 0.25
+        
         proj_pp_toi = proj_toi * pp_ratio
         proj_ev_toi = proj_toi - proj_pp_toi
         
