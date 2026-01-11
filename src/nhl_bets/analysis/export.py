@@ -17,6 +17,7 @@ def export_to_excel(bets, output_path):
             'Stat': b.stat_type,
             'Line': b.line_value,
             'Side': b.side,
+            'Book': 'PlayNow', # Default for now
             'Odds': b.odds_decimal,
             'Imp_Prob': b.implied_prob_raw,
             'Imp_Prob_NoVig': b.implied_prob_novig,
@@ -77,6 +78,7 @@ def export_to_csv(bets, output_path):
             'Stat': b.stat_type,
             'Line': b.line_value,
             'Side': b.side,
+            'Book': 'PlayNow',
             'Odds': b.odds_decimal,
             'EV': b.ev,
             'Supported': b.supported,

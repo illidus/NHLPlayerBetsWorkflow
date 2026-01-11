@@ -107,13 +107,9 @@ mu_adj_goals = mu_adj_goals * (R_tilde ** beta_finish)
 
 ### 2. SHOTS ON GOAL (SOG)
 
-**Base mean (Corsi-Split Logic):**
-SOG is modeled as "Volume $\times$ Efficiency" to maximize stability.
-- **Volume:** Corsi (Shot Attempts) stabilizes quickly (L20 window).
-- **Efficiency:** Through% (SOG / Corsi) stabilizes slowly (L40 window).
-
+**Base mean:**
 ```text
-mu_base_sog = (corsi_per_60_L20 * thru_pct_L40) * (avg_toi_minutes_L10 / 60)
+mu_base_sog = sog_per_60_L10 * (avg_toi_minutes_L10 / 60)
 ```
 
 **Adjustments:**
@@ -130,7 +126,7 @@ mu_adj_sog = mu_base_sog * Mult_opp * Mult_b2b
 
 **Base mean:**
 ```text
-mu_base_blk = blocks_per_60_L20 * (avg_toi_minutes_L10 / 60)
+mu_base_blk = blocks_per_60_L10 * (avg_toi_minutes_L10 / 60)
 ```
 
 **Adjustments:**
@@ -146,14 +142,14 @@ mu_adj_blk = mu_base_blk * Mult_opp * Mult_b2b
 ### 4. ASSISTS — Total Assists 0.5
 
 **Base mean (Enhanced Split-Process):**
-Assists use a **Last 40 Games (L40)** window for rates to filter noise, applied to the L20-projected TOI split.
+Assists are modeled by splitting projected TOI into Even Strength (EV) and Power Play (PP) components, applying process-driven rates for each.
 
 ```text
 proj_pp_toi = proj_toi * (pp_toi_L20 / (ev_toi_L20 + pp_toi_L20))
 proj_ev_toi = proj_toi - proj_pp_toi
 
-mu_ev_ast = ev_ast_60_L40 * (proj_ev_toi / 60)
-mu_pp_ast = pp_ast_60_L40 * (proj_pp_toi / 60)
+mu_ev_ast = ev_ast_60_L20 * (proj_ev_toi / 60)
+mu_pp_ast = pp_ast_60_L20 * (proj_pp_toi / 60)
 mu_base_ast = mu_ev_ast + mu_pp_ast
 ```
 
@@ -170,11 +166,11 @@ mu_adj_ast = mu_base_ast * Mult_opp * Mult_goalie * Mult_itt * Mult_b2b
 ### 5. POINTS — Total Points 0.5
 
 **Base mean (Enhanced Split-Process):**
-Points utilize a process-driven approach combining on-ice expected goals (`on_ice_xG`) and player involvement (`IPP`), prioritizing **L40** windows for stability.
+Points utilize a process-driven approach combining on-ice expected goals (`on_ice_xG`) and player involvement (`IPP`).
 
 ```text
-mu_ev_pts = (ev_ipp_x_L40 * ev_on_ice_xg_60_L40) * (proj_ev_toi / 60)
-mu_pp_pts = (pp_ipp_x_L40 * pp_on_ice_xg_60_L40) * (proj_pp_toi / 60)
+mu_ev_pts = (ev_ipp_x_L20 * ev_on_ice_xg_60_L20) * (proj_ev_toi / 60)
+mu_pp_pts = (pp_ipp_x_L20 * pp_on_ice_xg_60_L20) * (proj_pp_toi / 60)
 mu_base_pts = mu_ev_pts + mu_pp_pts
 ```
 
