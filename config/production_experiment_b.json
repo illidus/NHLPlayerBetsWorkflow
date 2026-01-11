@@ -1,0 +1,20 @@
+{
+    "profile_name": "production_experiment_b",
+    "description": "Production profile based on Experiment B (Jan 2026) - All Negative Binomial + Tail Bucket Calibration",
+    "settings": {
+        "variance_mode": "all_nb",
+        "calibration_mode": "tail_bucket",
+        "use_interactions": true,
+        "use_clusters": true,
+        "use_team_metrics": true
+    },
+    "paths": {
+        "scoring_alpha_override": "data/models/alpha_overrides/best_scoring_alphas.json",
+        "beta_override": "outputs/beta_optimization/final_betas.json",
+        "interaction_override": "outputs/beta_optimization/optimized_interactions.json"
+    },
+    "required_calibrators": [
+        "calib_tail_SOG_C_5.5plus_mid.joblib",
+        "calib_tail_SOG_D_5.5plus_mid.joblib"
+    ]
+}

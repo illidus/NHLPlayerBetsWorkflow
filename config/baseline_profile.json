@@ -1,0 +1,17 @@
+{
+    "profile_name": "baseline_profile",
+    "description": "Baseline Profile (Gen 2 / Experiment A) - Poisson Goals/Assists, No Calibration, No Interactions",
+    "settings": {
+        "variance_mode": "off",
+        "calibration_mode": "raw",
+        "use_interactions": false,
+        "use_clusters": true,
+        "use_team_metrics": true
+    },
+    "paths": {
+        "scoring_alpha_override": null,
+        "beta_override": null,
+        "interaction_override": null
+    },
+    "required_calibrators": []
+}

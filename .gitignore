@@ -1,31 +1,45 @@
-# --- Data and Database (Hard Exclude) ---
-data/db/
-data/raw/
-duckdb_temp/
-*.duckdb
-
-# --- Large/Transient Outputs ---
-outputs/odds/raw/
-outputs/**/*.csv
-outputs/**/*.xlsx
-outputs/**/*.jsonl
-outputs/**/*.log
-outputs/**/*.joblib
-outputs/archived_bets/
-
-# --- Models and Calibrators ---
-data/models/
-*.joblib
-
-# --- Python Environment ---
-.pytest_cache/
+# Core Ignore
 __pycache__/
-.ipynb_checkpoints/
-venv/
-.env
-
-# --- IDE/OS Specific ---
-.vscode/
-.idea/
+*.pyc
 .DS_Store
-Thumbs.db
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+.obsidian/
+
+# Project Data & Outputs (Default Ignore)
+data/
+outputs/
+*.duckdb
+*.log
+
+# Workspace Artifacts
+NHLPlayerBetsWorkflow/
+sandbox/audit_results.json
+sandbox/oddsshark_sample.html
+sandbox/unabated_sample.json
+
+# Explicitly Tracked Governance Artifacts (Exceptions)
+!outputs/eval/MASTER_BACKTEST_LEADERBOARD.md
+!outputs/eval/MASTER_BACKTEST_LEADERBOARD.csv
+!outputs/eval/EXCLUDED_RUNS.md
+!outputs/eval/eval_manifest_*.json
+!outputs/runs/run_manifest_*.json
+
+# Tracked Config & Profiles
+!config/*.json
+
+# Tracked Manual Overrides
+!data/overrides/manual_lineup_overrides.csv
+
+# Tracked Models (Alphas/Betas - source of truth)
+!data/models/alpha_overrides/best_scoring_alphas.json
+!outputs/beta_optimization/final_betas.json
+!outputs/beta_optimization/optimized_interactions.json
+
+# Docs (Ensure tracked)
+!docs/

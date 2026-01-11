@@ -60,3 +60,58 @@ Before moving a provider from "Experimental" to "Production", evaluate the audit
 | `market_coverage` | 3 markets | 4+ markets | Market variety. |
 
 Failure to meet these thresholds indicates the provider may require better normalization or a higher-tier plan.
+
+## 5. Player Identity Resolution (Phase 13)
+The ingestion pipeline now automatically runs Phase 13 Identity Resolution.
+- High-confidence matches (>= 0.90) are promoted to `fact_prop_odds`.
+- Low-confidence matches (< 0.90) are routed to `stg_prop_odds_unresolved`.
+
+### Verification
+Check `outputs/phase12_odds_api/<run_ts>/audit_unresolved_reasons.md` (if generated) or check the DB:
+```sql
+SELECT failure_reasons, count(*) FROM stg_prop_odds_unresolved GROUP BY 1;
+```
+
+### Identity Proof Mode
+To verify the quality of player resolution without commiting data or to just inspect stats:
+```powershell
+python pipelines/phase12_odds_api/run_provider_ingestion.py ... --prove_identity
+```
+Check `outputs/phase12_odds_api/<run_ts>/identity_proof.json`.
+
+## 6. Manual Alias Resolution
+To improve resolution rates, review the `stg_player_alias_review_queue`.
+
+1. **Review Queue:**
+   ```sql
+   SELECT * FROM stg_player_alias_review_queue WHERE decision_status = 'PENDING';
+   ```
+2. **Create Aliases:**
+   Insert confirmed mappings into `dim_player_alias`:
+   ```sql
+   INSERT INTO dim_player_alias (source_vendor, alias_text_norm, canonical_player_id, match_confidence, match_method)
+   VALUES ('THE_ODDS_API', 'alexis lafreniere', 'player_id_123', 1.0, 'MANUAL');
+   ```
+3. **Mark Resolved:**
+   Update the queue to prevent re-review:
+   ```sql
+   UPDATE stg_player_alias_review_queue SET decision_status = 'RESOLVED' WHERE alias_text_norm = 'alexis lafreniere';
+   ```
+4. **Re-run Ingestion:**
+   Re-running the ingestion for the same date will now resolve these players correctly using the new aliases.
+
+## 7. Roster Management (Phase 13 Strict Mode)
+Phase 13 requires roster snapshots to perform safe fuzzy matching.
+If `audit_player_resolution.md` shows high "Missing Roster Failures":
+
+1. **Check Snapshots:**
+   ```sql
+   SELECT team_abbrev, snapshot_date, count(*) FROM dim_team_roster_snapshot GROUP BY 1,2;
+   ```
+2. **Populate Snapshots:**
+   (Pending Phase 13.5 Roster Scraper)
+   Manually insert for critical dates if needed, or run the roster ingestion job (TBD).
+   Structure:
+   ```json
+   [{"player_id": "p1", "player_name_canonical": "Connor McDavid", "nhl_id": 8478402}, ...]
+   ```

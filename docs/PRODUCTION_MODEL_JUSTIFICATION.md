@@ -1,3 +1,7 @@
+# STATUS: SUPERSEDED
+**Canonical Truth:** [MASTER_BACKTEST_LEADERBOARD.md](../outputs/eval/MASTER_BACKTEST_LEADERBOARD.md)
+**Note:** This document provides context for early decision making but is no longer the active performance record.
+
 # Production Model Justification (Accuracy Proof)
 
 This document provides the statistical evidence for the current "Production" model configuration. It explains why we use specific probability variants for each market.

@@ -1,0 +1,3 @@
+run_id,date,profile,log_loss,brier_score,scope,lineage,notes
+20260111_002006,20260111_0,production_experiment_b,0.2553175268179067,0.07706172642104123,Global,official,Eval Manifest (fact_probabilities_experiment_B)
+20260111_002003,20260111_0,experiment_a_baseline,0.256431063956897,0.07771477448680275,Global,official,Eval Manifest (fact_probabilities_experiment_A)
