@@ -21,6 +21,7 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
         "unmatched_sample": [],
         "detected_columns": {},
         "required_columns": ['game_id', 'date', 'home', 'away'],
+        "daily_summary": [],
         "notes": []
     }
     
@@ -94,6 +95,7 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
         SELECT 
             p.row_id,
             p.match_key_code,
+            p.game_date,
             g.game_id,
             CASE 
                 WHEN p.match_key_code IS NULL THEN 'null_match_key_code'
@@ -104,26 +106,23 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
         LEFT JOIN games_w_keys g ON p.match_key_code = g.game_match_key
     )
     SELECT 
-        status, 
-        COUNT(*) as count,
-        list(match_key_code) FILTER (match_key_code IS NOT NULL) as keys
+        *
     FROM matched
-    GROUP BY status
     """
     
     try:
         df_res = con.execute(query).df()
         
-        total = df_res['count'].sum()
-        matched = df_res[df_res['status'] == 'Matched']['count'].sum() if not df_res.empty else 0
+        # --- Aggregation Metrics ---
+        summary = df_res.groupby('status').size().to_dict()
+        
+        total = len(df_res)
+        matched = summary.get('Matched', 0)
+        null_keys = summary.get('null_match_key_code', 0)
         
         metrics['total_phase11_rows'] = int(total)
         metrics['matched_count'] = int(matched)
         metrics['match_rate'] = matched / total if total > 0 else 0.0
-        
-        # Calculate rows with match key
-        # Total minus those with 'null_match_key_code'
-        null_keys = df_res[df_res['status'] == 'null_match_key_code']['count'].sum() if not df_res.empty else 0
         metrics['rows_with_match_key'] = int(total - null_keys)
         
         if total == 0:
@@ -135,22 +134,46 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
         else:
             metrics['status'] = "no_key_match" # Has keys but no matches
         
-        # Unmatched analysis
-        if not df_res.empty:
-            unmatched_rows = df_res[df_res['status'] != 'Matched']
-            for _, row in unmatched_rows.iterrows():
-                status = row['status']
-                count = row['count']
-                metrics['unmatched_reasons_breakdown'][status] = int(count)
+        metrics['unmatched_reasons_breakdown'] = {k: int(v) for k, v in summary.items() if k != 'Matched'}
+        
+        # Sample Keys
+        unmatched_mask = df_res['status'] != 'Matched'
+        if unmatched_mask.any():
+            sample_df = df_res[unmatched_mask].head(20)
+            for _, row in sample_df.iterrows():
+                k = row.get('match_key_code')
+                if k:
+                    metrics['unmatched_sample'].append(f"{row['status']}: {k}")
+                    
+        # --- Daily Summary ---
+        # Group by Date
+        if 'game_date' in df_res.columns:
+            # Pandas default groupby excludes Nulls unless dropna=False
+            daily_groups = df_res.groupby('game_date', dropna=False)
+            
+            for date_val, group in daily_groups:
+                d_total = len(group)
+                d_matched = len(group[group['status'] == 'Matched'])
+                d_null = len(group[group['status'] == 'null_match_key_code'])
+                d_rate = d_matched / d_total if d_total > 0 else 0.0
                 
-                # Sample keys
-                keys = row['keys']
-                if keys is not None and hasattr(keys, '__iter__') and not isinstance(keys, (str, bytes)):
-                    try:
-                        sample = list(keys)[:5]
-                        metrics['unmatched_sample'].extend([f"{status}: {k}" for k in sample])
-                    except Exception:
-                        pass
+                # Top reason
+                top_reason = "Matched"
+                status_counts = group['status'].value_counts()
+                if not status_counts.empty:
+                    top_reason = status_counts.index[0]
+                    
+                metrics['daily_summary'].append({
+                    "date": str(date_val),
+                    "total": int(d_total),
+                    "with_key": int(d_total - d_null),
+                    "matched": int(d_matched),
+                    "match_rate": float(d_rate),
+                    "top_status": str(top_reason)
+                })
+            
+            # Sort by date (handles None/NaT if any)
+            metrics['daily_summary'].sort(key=lambda x: x['date'] if x['date'] != 'None' else '0000-00-00')
                 
     except Exception as e:
         metrics['status'] = "error"

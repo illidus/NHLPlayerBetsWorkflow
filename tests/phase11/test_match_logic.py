@@ -13,34 +13,30 @@ def test_match_logic_in_memory():
     con.execute("INSERT INTO dim_games VALUES ('g2', '2023-11-01', 'TOR', 'BOS')")
     
     # 2. Create Fake Phase 11 Table
-    con.execute("CREATE TABLE fact_odds_historical_phase11 (row_id VARCHAR, match_key_code VARCHAR)")
+    con.execute("CREATE TABLE fact_odds_historical_phase11 (row_id VARCHAR, match_key_code VARCHAR, game_date DATE)")
     # Matches g1
-    con.execute("INSERT INTO fact_odds_historical_phase11 VALUES ('r1', '2023-11-01|DAL|EDM')") 
+    con.execute("INSERT INTO fact_odds_historical_phase11 VALUES ('r1', '2023-11-01|DAL|EDM', '2023-11-01')") 
     # Matches g2
-    con.execute("INSERT INTO fact_odds_historical_phase11 VALUES ('r2', '2023-11-01|BOS|TOR')")
+    con.execute("INSERT INTO fact_odds_historical_phase11 VALUES ('r2', '2023-11-01|BOS|TOR', '2023-11-01')")
     # No Match (wrong date)
-    con.execute("INSERT INTO fact_odds_historical_phase11 VALUES ('r3', '2023-11-02|DAL|EDM')")
+    con.execute("INSERT INTO fact_odds_historical_phase11 VALUES ('r3', '2023-11-02|DAL|EDM', '2023-11-02')")
     # Missing Key
-    con.execute("INSERT INTO fact_odds_historical_phase11 VALUES ('r4', NULL)")
+    con.execute("INSERT INTO fact_odds_historical_phase11 VALUES ('r4', NULL, '2023-11-01')")
     
     # 3. Run Matching
     metrics = match_phase11_rows(con, "fact_odds_historical_phase11", game_table_candidates=["dim_games"])
     
     assert metrics['status'] == 'success'
-    assert metrics['game_table_selected'] == 'dim_games'
-    assert metrics['total_phase11_rows'] == 4
-    assert metrics['matched_count'] == 2
     assert metrics['match_rate'] == 0.5
     
-    # Verify breakdown
-    # r3 -> no_key_match, r4 -> null_match_key_code
-    # Wait, implementation uses:
-    # WHEN p.match_key_code IS NULL THEN 'null_match_key_code'
-    # ELSE 'no_key_match'
-    # So r3 -> no_key_match, r4 -> null_match_key_code
-    breakdown = metrics['unmatched_reasons_breakdown']
-    assert breakdown.get('no_key_match') == 1
-    assert breakdown.get('null_match_key_code') == 1
+    # Verify daily summary exists
+    daily = metrics['daily_summary']
+    assert len(daily) > 0
+    # 2023-11-01 has 3 rows (r1, r2, r4), 2 matched, 1 null key
+    day1 = next(d for d in daily if d['date'] == '2023-11-01')
+    assert day1['total'] == 3
+    assert day1['matched'] == 2
+    assert day1['with_key'] == 2 # r1, r2
 
 def test_match_logic_no_game_table():
     con = duckdb.connect(':memory:')

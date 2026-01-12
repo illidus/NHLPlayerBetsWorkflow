@@ -112,6 +112,8 @@ def main():
     parser.add_argument("--date_to", help="Live fetch end date (NotImplemented)", default=None)
     parser.add_argument("--match_to_games", action="store_true", help="Attempt to match odds to games in DB")
     parser.add_argument("--game_table", help="Override game schedule table name", default=None)
+    parser.add_argument("--strict_match", action="store_true", help="Fail if match rate is below threshold")
+    parser.add_argument("--min_match_rate", type=float, default=0.90, help="Minimum match rate threshold")
     args = parser.parse_args()
 
     start_time = datetime.now(timezone.utc)
@@ -152,7 +154,6 @@ def main():
     setup_db(con)
     
     inserted_count = 0
-    rejected_count = 0 
     
     if rows:
         import pandas as pd
@@ -183,6 +184,8 @@ def main():
     
     # 4. Optional Game Matching
     matching_metrics = {}
+    exit_code = 0
+    
     if args.match_to_games:
         print("Running game matching...")
         matching_metrics = match_phase11_rows(
@@ -190,7 +193,15 @@ def main():
             "fact_odds_historical_phase11", 
             game_table_override=args.game_table
         )
-        print(f"Game Matching: {matching_metrics.get('status')} - Rate: {matching_metrics.get('match_rate', 0):.1%}")
+        rate = matching_metrics.get('match_rate', 0.0)
+        print(f"Game Matching: {matching_metrics.get('status')}" - Rate: {rate:.1%})
+        
+        if args.strict_match:
+            if rate < args.min_match_rate:
+                print(f"STRICT MODE FAIL: Match rate {rate:.1%} < {args.min_match_rate:.1%}")
+                exit_code = 2
+            else:
+                print("STRICT MODE PASS")
     
     con.close()
 
@@ -205,7 +216,7 @@ def main():
         if not r.get('away_team_code') and r.get('away_team_raw'):
             unresolved_teams.append(r['away_team_raw'])
             
-unresolved_counts = Counter(unresolved_teams)
+    unresolved_counts = Counter(unresolved_teams)
     
     # Run Manifest
     manifest = {
@@ -218,8 +229,7 @@ unresolved_counts = Counter(unresolved_teams)
         "counts": {
             "raw_items": len(data) if isinstance(data, list) else 1,
             "normalized_rows": len(rows),
-            "inserted_rows": inserted_count,
-            "rejected_rows": rejected_count
+            "inserted_rows": inserted_count
         },
         "metrics": {
             "team_code_resolution_rate": resolution_rate,
@@ -253,14 +263,27 @@ unresolved_counts = Counter(unresolved_teams)
             f.write(f"- Table Used: {matching_metrics.get('game_table_selected')}\n")
             f.write(f"- Match Rate: {matching_metrics.get('match_rate', 0):.1%}\n")
             f.write(f"- Rows w/ Key: {matching_metrics.get('rows_with_match_key', 0)}\n")
-            f.write(f"- Unmatched Reasons:\n")
+            
+            # Strict Mode section
+            if args.strict_match:
+                f.write(f"- **Strict Mode:** Enabled (Threshold: {args.min_match_rate:.1%})\n")
+                f.write(f"- **Outcome:** {{'FAIL' if exit_code == 2 else 'PASS'}}\n")
+            
+            f.write(f"### Unmatched Reasons\n")
             for r, c in matching_metrics.get('unmatched_reasons_breakdown', {}).items():
-                f.write(f"  - {r}: {c}\n")
-            f.write(f"- Notes: {matching_metrics.get('notes')}\n")
+                f.write(f"- {r}: {c}\n")
+                
+            f.write(f"### Daily Match Summary\n")
+            f.write(f"| Date | Total | With Key | Matched | Rate | Top Status |\n")
+            f.write(f"| :--- | :---: | :---: | :---: | :---: | :--- |\n")
+            for day in matching_metrics.get('daily_summary', []):
+                f.write(f"| {day['date']} | {day['total']} | {day['with_key']} | {day['matched']} | {day['match_rate']:.1%} | {day['top_status']} |\n")
+            
+            f.write(f"\n### Unmatched Sample\n")
             if matching_metrics.get('unmatched_sample'):
-                f.write(f"\n- Unmatched Sample:\n")
                 for s in matching_metrics['unmatched_sample']:
-                    f.write(f"  - {s}\n")
+                    f.write(f"- {s}\n")
+            
             if matching_metrics.get('status') == 'error':
                 f.write(f"\n**ERROR:** {matching_metrics.get('error_type')}: {matching_metrics.get('error_message')}\n")
         
@@ -297,6 +320,8 @@ unresolved_counts = Counter(unresolved_teams)
     print(f"Run Manifest: {man_path}")
     print(f"Eval Manifest: {eval_man_path}")
     print(f"Report: {report_path}")
+    
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()
