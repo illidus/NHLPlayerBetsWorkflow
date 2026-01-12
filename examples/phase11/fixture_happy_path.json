@@ -1,0 +1,33 @@
+[
+    {
+        "id": "event_1",
+        "startTime": "2023-11-01T00:00:00Z",
+        "bookId": "draftkings",
+        "homeTeam": "Edmonton Oilers",
+        "awayTeam": "Dallas Stars",
+        "markets": [
+            {
+                "key": "player_goals",
+                "outcomes": [
+                    {"participant": "Connor McDavid", "line": 0.5, "oddsAmerican": -110, "label": "Over"},
+                    {"participant": "Leon Draisaitl", "line": 0.5, "oddsAmerican": -120, "label": "Over"}
+                ]
+            }
+        ]
+    },
+    {
+        "id": "event_2",
+        "startTime": "2023-11-01T03:00:00Z",
+        "bookId": "fanduel",
+        "homeTeam": "Toronto Maple Leafs",
+        "awayTeam": "Boston Bruins",
+        "markets": [
+            {
+                "key": "player_shots",
+                "outcomes": [
+                    {"participant": "Auston Matthews", "line": 3.5, "oddsDecimal": 1.85, "label": "Over"}
+                ]
+            }
+        ]
+    }
+]
