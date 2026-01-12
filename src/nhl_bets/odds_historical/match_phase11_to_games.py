@@ -25,16 +25,6 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
     selected_table = None
     cols_map = {} # 'date', 'home', 'away', 'game_id'
     
-    # Get available tables safely
-    try:
-        # Use simple PRAGMA or SHOW tables if preferred, but execute works
-        # Just check candidates directly
-        pass
-    except Exception as e:
-        metrics['status'] = "error"
-        metrics['notes'].append(f"DB Introspection failed: {e}")
-        return metrics
-
     for table in game_table_candidates:
         try:
             # Check existence
@@ -54,8 +44,6 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
             elif 'date' in cols: mapping['date'] = 'date'
             elif 'start_time' in cols: mapping['date'] = 'start_time'
             
-            # Support both raw names and codes if available, prefer codes for matching
-            # The test uses home_team / away_team usually containing codes or names
             if 'home_team_code' in cols: mapping['home'] = 'home_team_code'
             elif 'home_team' in cols: mapping['home'] = 'home_team'
             elif 'home_code' in cols: mapping['home'] = 'home_code'
@@ -80,12 +68,6 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
     metrics['columns_used'] = cols_map
     
     # 2. Build Game Match Keys
-    # match_key_code format: YYYY-MM-DD|AWAY|HOME
-    # We must ensure the game table columns are cast correctly to string/date
-    
-    # Check if date needs cast to DATE (if it's timestamp/string)
-    # CAST(col AS DATE) works on timestamp and proper YYYY-MM-DD strings.
-    
     game_key_expr = f"CAST({cols_map['date']} AS DATE) || '|' || {cols_map['away']} || '|' || {cols_map['home']}"
     
     query = f"""
@@ -117,7 +99,6 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
     """
     
     try:
-        # Use .df() to get Pandas DataFrame for easier handling
         df_res = con.execute(query).df()
         
         total = df_res['count'].sum()
@@ -137,17 +118,17 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
                 metrics['unmatched_reasons'][status] = int(count)
                 
                 # Sample keys
-                # DuckDB 'list()' returns numpy array or list
                 keys = row['keys']
-                if keys is not None:
-                    # Depending on driver version, might be list or ndarray
-                    sample = list(keys)[:5]
-                    metrics['unmatched_sample'].extend([f"{status}: {k}" for k in sample])
+                # Hardened check for iterability (NAType is not iterable)
+                if keys is not None and hasattr(keys, '__iter__') and not isinstance(keys, (str, bytes)):
+                    try:
+                        sample = list(keys)[:5]
+                        metrics['unmatched_sample'].extend([f"{status}: {k}" for k in sample])
+                    except Exception:
+                        pass
                 
     except Exception as e:
         metrics['status'] = "error"
         metrics['notes'].append(f"Matching query failed: {e}")
-        # Debug helper: print query if needed (commented out for prod)
-        # print(f"DEBUG QUERY: {query}")
         
     return metrics
