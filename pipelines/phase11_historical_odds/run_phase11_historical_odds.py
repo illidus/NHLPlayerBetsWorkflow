@@ -111,6 +111,7 @@ def main():
     parser.add_argument("--date_from", help="Live fetch start date (NotImplemented)", default=None)
     parser.add_argument("--date_to", help="Live fetch end date (NotImplemented)", default=None)
     parser.add_argument("--match_to_games", action="store_true", help="Attempt to match odds to games in DB")
+    parser.add_argument("--game_table", help="Override game schedule table name", default=None)
     args = parser.parse_args()
 
     start_time = datetime.now(timezone.utc)
@@ -170,7 +171,8 @@ def main():
             INSERT INTO fact_odds_historical_phase11
             SELECT * FROM df_stage
             WHERE row_id NOT IN (SELECT row_id FROM fact_odds_historical_phase11)
-        """)
+        """,
+        )
         
         try:
             inserted_count = result.fetchall()[0][0]
@@ -183,7 +185,11 @@ def main():
     matching_metrics = {}
     if args.match_to_games:
         print("Running game matching...")
-        matching_metrics = match_phase11_rows(con, "fact_odds_historical_phase11")
+        matching_metrics = match_phase11_rows(
+            con, 
+            "fact_odds_historical_phase11", 
+            game_table_override=args.game_table
+        )
         print(f"Game Matching: {matching_metrics.get('status')} - Rate: {matching_metrics.get('match_rate', 0):.1%}")
     
     con.close()
@@ -199,7 +205,7 @@ def main():
         if not r.get('away_team_code') and r.get('away_team_raw'):
             unresolved_teams.append(r['away_team_raw'])
             
-    unresolved_counts = Counter(unresolved_teams)
+unresolved_counts = Counter(unresolved_teams)
     
     # Run Manifest
     manifest = {
@@ -246,12 +252,19 @@ def main():
             f.write(f"- Status: {matching_metrics.get('status')}\n")
             f.write(f"- Table Used: {matching_metrics.get('game_table_selected')}\n")
             f.write(f"- Match Rate: {matching_metrics.get('match_rate', 0):.1%}\n")
+            f.write(f"- Rows w/ Key: {matching_metrics.get('rows_with_match_key', 0)}\n")
             f.write(f"- Unmatched Reasons:\n")
-            for r, c in matching_metrics.get('unmatched_reasons', {}).items():
+            for r, c in matching_metrics.get('unmatched_reasons_breakdown', {}).items():
                 f.write(f"  - {r}: {c}\n")
-            f.write(f"- Notes: {matching_metrics.get('notes')}\n\n")
+            f.write(f"- Notes: {matching_metrics.get('notes')}\n")
+            if matching_metrics.get('unmatched_sample'):
+                f.write(f"\n- Unmatched Sample:\n")
+                for s in matching_metrics['unmatched_sample']:
+                    f.write(f"  - {s}\n")
+            if matching_metrics.get('status') == 'error':
+                f.write(f"\n**ERROR:** {matching_metrics.get('error_type')}: {matching_metrics.get('error_message')}\n")
         
-        f.write(f"## Unresolved Teams (Top 10)\n")
+        f.write(f"\n## Unresolved Teams (Top 10)\n")
         if unresolved_counts:
             for team, count in unresolved_counts.most_common(10):
                 f.write(f"- {team}: {count}\n")
