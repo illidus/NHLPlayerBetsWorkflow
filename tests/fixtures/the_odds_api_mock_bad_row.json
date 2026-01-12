@@ -1,0 +1,45 @@
+[
+  {
+      "id": "3c515159345995543c97107787265917",
+      "sport_key": "icehockey_nhl",
+      "commence_time": "2023-01-01T19:00:00Z",
+      "home_team": "Edmonton Oilers",
+      "away_team": "Toronto Maple Leafs",
+      "bookmakers": [
+          {
+              "key": "draftkings",
+              "title": "DraftKings",
+              "markets": [
+                  {
+                      "key": "player_points",
+                      "outcomes": [
+                          {"name": "Connor McDavid", "description": "Over", "price": 1.80, "point": 1.5},
+                          {"name": "Connor McDavid", "description": "Under", "price": 2.05, "point": 1.5}
+                      ]
+                  }
+              ]
+          }
+      ]
+  },
+  {
+      "id": null, 
+      "sport_key": "icehockey_nhl",
+      "commence_time": "2023-01-01T20:00:00Z",
+      "home_team": "Invalid Team",
+      "away_team": "Ghost Team",
+      "bookmakers": [
+          {
+              "key": "badbook",
+              "title": "BadBook",
+              "markets": [
+                  {
+                      "key": "player_goals",
+                      "outcomes": [
+                          {"name": "Ghost Player", "description": "Over", "price": 1.0, "point": 0.5}
+                      ]
+                  }
+              ]
+          }
+      ]
+  }
+]
