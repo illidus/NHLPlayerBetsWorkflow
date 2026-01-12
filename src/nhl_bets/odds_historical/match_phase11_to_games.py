@@ -157,7 +157,7 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
                     date_str = "None"
                 else:
                     # Convert to string YYYY-MM-DD
-                    date_str = str(date_val)[:10] 
+                    date_str = str(date_val)[:10]
                 
                 d_total = len(group)
                 d_matched = len(group[group['status'] == 'Matched'])
