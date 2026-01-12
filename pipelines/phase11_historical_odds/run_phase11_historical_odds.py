@@ -16,6 +16,7 @@ if repo_root not in sys.path:
 
 try:
     from src.nhl_bets.odds_historical.normalize_phase11 import normalize_batch
+    from src.nhl_bets.odds_historical.match_phase11_to_games import match_phase11_rows
 except ImportError as e:
     print(f"Import Error: {e}")
     sys.exit(1)
@@ -109,6 +110,7 @@ def main():
     parser.add_argument("--fixture", help="Path to JSON fixture file")
     parser.add_argument("--date_from", help="Live fetch start date (NotImplemented)", default=None)
     parser.add_argument("--date_to", help="Live fetch end date (NotImplemented)", default=None)
+    parser.add_argument("--match_to_games", action="store_true", help="Attempt to match odds to games in DB")
     args = parser.parse_args()
 
     start_time = datetime.now(timezone.utc)
@@ -149,13 +151,12 @@ def main():
     setup_db(con)
     
     inserted_count = 0
-    rejected_count = 0 # Placeholder for now
+    rejected_count = 0 
     
     if rows:
         import pandas as pd
         df = pd.DataFrame(rows)
         
-        # Ensure column order matches DDL
         for col in DDL_COLUMNS:
             if col not in df.columns:
                 df[col] = None
@@ -169,21 +170,25 @@ def main():
             INSERT INTO fact_odds_historical_phase11
             SELECT * FROM df_stage
             WHERE row_id NOT IN (SELECT row_id FROM fact_odds_historical_phase11)
-        """,
-        )
+        ")
         
         try:
             inserted_count = result.fetchall()[0][0]
         except Exception:
-            inserted_count = len(rows) # Fallback
+            inserted_count = len(rows) 
             
         print(f"Inserted {inserted_count} new rows.")
     
+    # 4. Optional Game Matching
+    matching_metrics = {}
+    if args.match_to_games:
+        print("Running game matching...")
+        matching_metrics = match_phase11_rows(con, "fact_odds_historical_phase11")
+        print(f"Game Matching: {matching_metrics.get('status')} - Rate: {matching_metrics.get('match_rate', 0):.1%}")
+    
     con.close()
 
-    # 4. Reporting & Metrics
-    
-    # Coverage Stats
+    # 5. Reporting & Metrics
     resolved_both_count = sum(1 for r in rows if r.get('home_team_code') and r.get('away_team_code'))
     resolution_rate = resolved_both_count / len(rows) if rows else 0.0
     
@@ -194,11 +199,9 @@ def main():
         if not r.get('away_team_code') and r.get('away_team_raw'):
             unresolved_teams.append(r['away_team_raw'])
             
-    unresolved_counts = Counter(unresolved_teams)
+unresolved_counts = Counter(unresolved_teams)
     
-    # 5. Governance Artifacts
-    
-    # Run Manifest (Standard Naming for Indexer)
+    # Run Manifest
     manifest = {
         "timestamp": start_time.isoformat(),
         "git_sha": git_sha,
@@ -225,7 +228,7 @@ def main():
     with open(man_path, 'w') as f:
         json.dump(manifest, f, indent=4)
         
-    # Coverage Report (Audit)
+    # Coverage Report
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     report_path = os.path.join(OUTPUT_DIR, f"phase11_coverage_{ts_str}.md")
     with open(report_path, 'w') as f:
@@ -238,6 +241,16 @@ def main():
         f.write(f"- DB Inserted: {inserted_count}\n")
         f.write(f"- Team Code Resolution Rate: {resolution_rate:.1%}\n\n")
         
+        if matching_metrics:
+            f.write(f"## Game Matching (Experimental)\n")
+            f.write(f"- Status: {matching_metrics.get('status')}\n")
+            f.write(f"- Table Used: {matching_metrics.get('game_table_selected')}\n")
+            f.write(f"- Match Rate: {matching_metrics.get('match_rate', 0):.1%}\n")
+            f.write(f"- Unmatched Reasons:\n")
+            for r, c in matching_metrics.get('unmatched_reasons', {}).items():
+                f.write(f"  - {r}: {c}\n")
+            f.write(f"- Notes: {matching_metrics.get('notes')}\n\n")
+        
         f.write(f"## Unresolved Teams (Top 10)\n")
         if unresolved_counts:
             for team, count in unresolved_counts.most_common(10):
@@ -245,7 +258,7 @@ def main():
         else:
             f.write("None (All teams resolved)\n")
         
-    # Eval Manifest (Coverage Eval Stub)
+    # Eval Manifest
     eval_manifest = {
         "timestamp": start_time.isoformat(),
         "git_sha": git_sha,
@@ -254,7 +267,8 @@ def main():
         "coverage_summary": {
             "total_rows": len(rows),
             "inserted": inserted_count,
-            "resolution_rate": resolution_rate
+            "resolution_rate": resolution_rate,
+            "game_matching": matching_metrics
         },
         "links": {
             "run_manifest": man_path,

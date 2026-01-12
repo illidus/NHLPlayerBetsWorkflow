@@ -28,6 +28,13 @@ This is the canonical way to test ingestion without API keys.
 python pipelines/phase11_historical_odds/run_phase11_historical_odds.py --fixture examples/phase11/fixture_happy_path.json
 ```
 
+**With Game Matching (Experimental):**
+Attempts to match ingested rows to games existing in the database (e.g., `dim_games`).
+
+```powershell
+python pipelines/phase11_historical_odds/run_phase11_historical_odds.py --fixture examples/phase11/fixture_happy_path.json --match_to_games
+```
+
 ## Governance Outputs
 This pipeline is fully integrated with repo governance tooling.
 
@@ -36,9 +43,10 @@ This pipeline is fully integrated with repo governance tooling.
     *   Contains record of input source, row counts, and team resolution rates.
 *   **Eval Manifest:** `outputs/eval/eval_manifest_<timestamp>.json`
     *   Stubs a "coverage evaluation" to track data quality over time.
+    *   Includes `game_matching` metrics if enabled.
 *   **Coverage Report:** `outputs/odds_archive_audit/phase11_coverage_<timestamp>.md`
     *   Detailed human-readable audit log (ignored by git).
-    *   Lists top unresolved teams.
+    *   Lists top unresolved teams and match failure reasons.
 
 ## Coexistence with Phase 12
 Phase 12 is the *production* live odds ingestion. Phase 11 is strictly for *historical backfill* and *offline analysis*. They may share schema concepts but run in separate pipelines to ensure production stability.
