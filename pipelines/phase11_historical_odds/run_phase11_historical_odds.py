@@ -6,6 +6,7 @@ import duckdb
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from collections import Counter
 
 # Add src to path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,7 +26,6 @@ RUNS_DIR = os.path.join(repo_root, 'outputs', 'runs')
 EVAL_DIR = os.path.join(repo_root, 'outputs', 'eval')
 
 # DDL for Phase 11 Table (Updated with join keys)
-# Note: DuckDB ALTER TABLE IF NOT EXISTS logic handled manually or via broad catch
 DDL_PHASE11 = """
 CREATE TABLE IF NOT EXISTS fact_odds_historical_phase11 (
     row_id VARCHAR PRIMARY KEY,
@@ -46,7 +46,10 @@ CREATE TABLE IF NOT EXISTS fact_odds_historical_phase11 (
     away_team_raw VARCHAR,
     home_team_norm VARCHAR,
     away_team_norm VARCHAR,
-    match_key VARCHAR
+    match_key VARCHAR,
+    home_team_code VARCHAR,
+    away_team_code VARCHAR,
+    match_key_code VARCHAR
 );
 """
 
@@ -70,7 +73,10 @@ DDL_COLUMNS = [
     'away_team_raw',
     'home_team_norm',
     'away_team_norm',
-    'match_key'
+    'match_key',
+    'home_team_code',
+    'away_team_code',
+    'match_key_code'
 ]
 
 def setup_db(con):
@@ -84,12 +90,15 @@ def setup_db(con):
         'away_team_raw': 'VARCHAR',
         'home_team_norm': 'VARCHAR',
         'away_team_norm': 'VARCHAR',
-        'match_key': 'VARCHAR'
+        'match_key': 'VARCHAR',
+        'home_team_code': 'VARCHAR',
+        'away_team_code': 'VARCHAR',
+        'match_key_code': 'VARCHAR'
     }
     
     for col, dtype in new_cols.items():
         if col not in existing_cols:
-            print(f"Migration: Adding {col} to fact_odds_historical_phase11")
+            print(f"Migrating: Adding {col} to fact_odds_historical_phase11")
             try:
                 con.execute(f"ALTER TABLE fact_odds_historical_phase11 ADD COLUMN {col} {dtype}")
             except Exception as e:
@@ -172,7 +181,22 @@ def main():
     
     con.close()
 
-    # 4. Governance Artifacts
+    # 4. Reporting & Metrics
+    
+    # Coverage Stats
+    resolved_both_count = sum(1 for r in rows if r.get('home_team_code') and r.get('away_team_code'))
+    resolution_rate = resolved_both_count / len(rows) if rows else 0.0
+    
+    unresolved_teams = []
+    for r in rows:
+        if not r.get('home_team_code') and r.get('home_team_raw'):
+            unresolved_teams.append(r['home_team_raw'])
+        if not r.get('away_team_code') and r.get('away_team_raw'):
+            unresolved_teams.append(r['away_team_raw'])
+            
+    unresolved_counts = Counter(unresolved_teams)
+    
+    # 5. Governance Artifacts
     
     # Run Manifest (Standard Naming for Indexer)
     manifest = {
@@ -188,12 +212,15 @@ def main():
             "inserted_rows": inserted_count,
             "rejected_rows": rejected_count
         },
+        "metrics": {
+            "team_code_resolution_rate": resolution_rate,
+            "unresolved_team_count": len(unresolved_counts)
+        },
         "output_table": "fact_odds_historical_phase11",
         "output_files": []
     }
     
     os.makedirs(RUNS_DIR, exist_ok=True)
-    # Using standard pattern: run_manifest_<timestamp>.json
     man_path = os.path.join(RUNS_DIR, f"run_manifest_{ts_str}.json")
     with open(man_path, 'w') as f:
         json.dump(manifest, f, indent=4)
@@ -209,10 +236,16 @@ def main():
         f.write(f"- Input Items: {manifest['counts']['raw_items']}\n")
         f.write(f"- Normalized Rows: {len(rows)}\n")
         f.write(f"- DB Inserted: {inserted_count}\n")
+        f.write(f"- Team Code Resolution Rate: {resolution_rate:.1%}\n\n")
+        
+        f.write(f"## Unresolved Teams (Top 10)\n")
+        if unresolved_counts:
+            for team, count in unresolved_counts.most_common(10):
+                f.write(f"- {team}: {count}\n")
+        else:
+            f.write("None (All teams resolved)\n")
         
     # Eval Manifest (Coverage Eval Stub)
-    # This is required for the indexer to see it as an "eval" run too (if desired), 
-    # or just to track coverage stats separately.
     eval_manifest = {
         "timestamp": start_time.isoformat(),
         "git_sha": git_sha,
@@ -220,7 +253,8 @@ def main():
         "eval_type": "coverage",
         "coverage_summary": {
             "total_rows": len(rows),
-            "inserted": inserted_count
+            "inserted": inserted_count,
+            "resolution_rate": resolution_rate
         },
         "links": {
             "run_manifest": man_path,

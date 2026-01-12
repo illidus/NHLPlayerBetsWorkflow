@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone
+from src.nhl_bets.odds_historical.team_codes import resolve_team_code
 
 def normalize_team_name(name):
     """Basic normalization: strip, upper, remove punctuation."""
@@ -64,12 +65,20 @@ def normalize_fixture_row(raw_item, capture_ts):
     home_norm = normalize_team_name(home_raw)
     away_norm = normalize_team_name(away_raw)
     
+    # Code Resolution
+    home_code = resolve_team_code(home_raw)
+    away_code = resolve_team_code(away_raw)
+    
     match_key = None
+    match_key_code = None
+    
     if game_date and home_norm and away_norm:
-        # Construct deterministic key: YYYY-MM-DD|AWAY|HOME (or sorted?)
-        # Let's stick to Away|Home convention if possible, or just raw Home|Away
-        # Standard: Date|Away|Home is common.
+        # Legacy Name-Based Key
         match_key = f"{game_date}|{away_norm}|{home_norm}"
+        
+    if game_date and home_code and away_code:
+        # Robust Code-Based Key
+        match_key_code = f"{game_date}|{away_code}|{home_code}"
     
     # We assume the fixture might contain a list of markets
     markets = raw_item.get('markets', [])
@@ -107,13 +116,18 @@ def normalize_fixture_row(raw_item, capture_ts):
                 'odds_decimal': float(odds_dec) if odds_dec else None,
                 'ingested_at_utc': datetime.now(timezone.utc).isoformat(),
                 
-                # New Join Keys
+                # Join Keys (Name Based)
                 'game_date': game_date,
                 'home_team_raw': home_raw,
                 'away_team_raw': away_raw,
                 'home_team_norm': home_norm,
                 'away_team_norm': away_norm,
-                'match_key': match_key
+                'match_key': match_key,
+                
+                # Join Keys (Code Based)
+                'home_team_code': home_code,
+                'away_team_code': away_code,
+                'match_key_code': match_key_code
             }
             
             # Add stable ID

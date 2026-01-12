@@ -19,6 +19,7 @@ To support downstream matching with game stats, the normalization process genera
 *   `game_date` (YYYY-MM-DD)
 *   `home_team_norm` / `away_team_norm` (Standardized uppercase strings)
 *   `match_key` (Format: `DATE|AWAY|HOME`)
+*   `match_key_code` (Format: `DATE|AWAY_CODE|HOME_CODE`) - *Preferred* using 3-letter NHL codes (e.g. `2023-11-01|DAL|EDM`).
 
 ## How to Run (Fixture Mode)
 This is the canonical way to test ingestion without API keys.
@@ -32,11 +33,12 @@ This pipeline is fully integrated with repo governance tooling.
 
 *   **Run Manifest:** `outputs/runs/run_manifest_<timestamp>.json`
     *   Indexed by `scripts/index_historical_evals.py`.
-    *   Contains record of input source and row counts.
+    *   Contains record of input source, row counts, and team resolution rates.
 *   **Eval Manifest:** `outputs/eval/eval_manifest_<timestamp>.json`
     *   Stubs a "coverage evaluation" to track data quality over time.
 *   **Coverage Report:** `outputs/odds_archive_audit/phase11_coverage_<timestamp>.md`
     *   Detailed human-readable audit log (ignored by git).
+    *   Lists top unresolved teams.
 
 ## Coexistence with Phase 12
 Phase 12 is the *production* live odds ingestion. Phase 11 is strictly for *historical backfill* and *offline analysis*. They may share schema concepts but run in separate pipelines to ensure production stability.

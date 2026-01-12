@@ -2,6 +2,7 @@ import pytest
 import json
 import os
 from src.nhl_bets.odds_historical.normalize_phase11 import normalize_batch
+from src.nhl_bets.odds_historical.team_codes import resolve_team_code
 
 FIXTURE_HAPPY = "examples/phase11/fixture_happy_path.json"
 FIXTURE_EDGE = "examples/phase11/fixture_edge_case.json"
@@ -9,6 +10,12 @@ FIXTURE_EDGE = "examples/phase11/fixture_edge_case.json"
 def load_fixture(path):
     with open(path, 'r') as f:
         return json.load(f)
+
+def test_team_code_resolver():
+    assert resolve_team_code("St. Louis Blues") == "STL"
+    assert resolve_team_code("NY Rangers") == "NYR"
+    assert resolve_team_code("Montréal Canadiens") == "MTL"
+    assert resolve_team_code("Unknown Squad") is None
 
 def test_happy_path_normalization():
     data = load_fixture(FIXTURE_HAPPY)
@@ -28,7 +35,12 @@ def test_happy_path_normalization():
     assert row0['game_date'] == "2023-11-01"
     assert row0['home_team_raw'] == "Edmonton Oilers"
     assert row0['home_team_norm'] == "EDMONTON OILERS"
+    assert row0['home_team_code'] == "EDM"
+    assert row0['away_team_code'] == "DAL"
+    
+    # Match Keys
     assert row0['match_key'] == "2023-11-01|DALLAS STARS|EDMONTON OILERS"
+    assert row0['match_key_code'] == "2023-11-01|DAL|EDM"
 
 def test_edge_case_normalization():
     data = load_fixture(FIXTURE_EDGE)
@@ -42,3 +54,5 @@ def test_edge_case_normalization():
     
     # Missing teams in edge fixture -> match_key should be None
     assert rows[0].get('match_key') is None
+    assert rows[0].get('match_key_code') is None
+    assert rows[0].get('home_team_code') is None
