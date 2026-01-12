@@ -152,6 +152,13 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
             daily_groups = df_res.groupby('game_date', dropna=False)
             
             for date_val, group in daily_groups:
+                # Handle NaT/None date robustly
+                if pd.isna(date_val):
+                    date_str = "None"
+                else:
+                    # Convert to string YYYY-MM-DD
+                    date_str = str(date_val)[:10] 
+                
                 d_total = len(group)
                 d_matched = len(group[group['status'] == 'Matched'])
                 d_null = len(group[group['status'] == 'null_match_key_code'])
@@ -164,7 +171,7 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
                     top_reason = status_counts.index[0]
                     
                 metrics['daily_summary'].append({
-                    "date": str(date_val),
+                    "date": date_str,
                     "total": int(d_total),
                     "with_key": int(d_total - d_null),
                     "matched": int(d_matched),
@@ -172,7 +179,7 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
                     "top_status": str(top_reason)
                 })
             
-            # Sort by date (handles None/NaT if any)
+            # Sort by date
             metrics['daily_summary'].sort(key=lambda x: x['date'] if x['date'] != 'None' else '0000-00-00')
                 
     except Exception as e:

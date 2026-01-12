@@ -154,6 +154,7 @@ def main():
     setup_db(con)
     
     inserted_count = 0
+    rejected_count = 0 
     
     if rows:
         import pandas as pd
@@ -193,8 +194,8 @@ def main():
             "fact_odds_historical_phase11", 
             game_table_override=args.game_table
         )
-        rate = matching_metrics.get('match_rate', 0.0)
-        print(f"Game Matching: {matching_metrics.get('status')}" - Rate: {rate:.1%})
+        rate = float(matching_metrics.get('match_rate') or 0.0)
+        print(f"Game Matching: {matching_metrics.get('status')} - Rate: {rate:.1%}")
         
         if args.strict_match:
             if rate < args.min_match_rate:
@@ -216,7 +217,7 @@ def main():
         if not r.get('away_team_code') and r.get('away_team_raw'):
             unresolved_teams.append(r['away_team_raw'])
             
-    unresolved_counts = Counter(unresolved_teams)
+unresolved_counts = Counter(unresolved_teams)
     
     # Run Manifest
     manifest = {
@@ -229,7 +230,8 @@ def main():
         "counts": {
             "raw_items": len(data) if isinstance(data, list) else 1,
             "normalized_rows": len(rows),
-            "inserted_rows": inserted_count
+            "inserted_rows": inserted_count,
+            "rejected_rows": rejected_count
         },
         "metrics": {
             "team_code_resolution_rate": resolution_rate,
