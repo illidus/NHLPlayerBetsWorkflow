@@ -1,0 +1,20 @@
+{
+  "expected_classification": "NHL_PASS",
+  "candidate": {
+    "entity_type": "PLAYER",
+    "player_name_raw": "Artemi Panarin",
+    "market": "ASSISTS",
+    "side": "OVER",
+    "line": 0.5,
+    "odds": -125,
+    "bookmaker": "draftkings"
+  },
+  "meta": {
+    "date": "2023-01-01",
+    "matchup": "NYR @ FLA",
+    "home_team": "Florida Panthers",
+    "away_team": "New York Rangers",
+    "event_id_vendor": "2022020591",
+    "url": "https://www.pickswise.com/nhl/props/example2"
+  }
+}
