@@ -25,7 +25,8 @@ def test_match_logic_in_memory():
     
     # 3. Run Matching
     # Note: candidates list explicitly provided to ensure deterministic test
-    metrics = match_phase11_rows(con, "fact_odds_historical_phase11", candidates=["dim_games"])
+    # Fix: argument name is game_table_candidates, NOT candidates
+    metrics = match_phase11_rows(con, "fact_odds_historical_phase11", game_table_candidates=["dim_games"])
     
     assert metrics['status'] == 'success'
     assert metrics['game_table_selected'] == 'dim_games'

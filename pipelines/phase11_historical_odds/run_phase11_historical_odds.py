@@ -170,7 +170,7 @@ def main():
             INSERT INTO fact_odds_historical_phase11
             SELECT * FROM df_stage
             WHERE row_id NOT IN (SELECT row_id FROM fact_odds_historical_phase11)
-        ")
+        """)
         
         try:
             inserted_count = result.fetchall()[0][0]
@@ -199,7 +199,7 @@ def main():
         if not r.get('away_team_code') and r.get('away_team_raw'):
             unresolved_teams.append(r['away_team_raw'])
             
-unresolved_counts = Counter(unresolved_teams)
+    unresolved_counts = Counter(unresolved_teams)
     
     # Run Manifest
     manifest = {
