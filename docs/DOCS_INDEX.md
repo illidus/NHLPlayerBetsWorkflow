@@ -24,7 +24,7 @@ Documents describing features not yet in `production_experiment_b`.
 | Document | Status |
 | :--- | :--- |
 | `phase11_historical_odds/PHASE11_IMPLEMENTATION.md` | **Active Dev.** Odds ingestion logic. |
-| `phase11_historical_odds/README.md` | **Experimental.** Historical odds pipeline docs. |
+| `phase11_historical_odds/README.md` | **Experimental.** Historical odds ingestion/matching only. |
 | `phase12_odds_api/OPERATIONS.md` | **Draft.** Future integration plan. |
 
 ## 🔴 Historical / Superseded

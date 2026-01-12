@@ -8,6 +8,8 @@ This module provides a pipeline to ingest historical odds from:
 1.  **Offline Fixtures:** JSON dumps of past odds (for development/testing).
 2.  **Live APIs:** (Future) Fetching historical windows from providers.
 
+**Scope Note:** Phase 11 covers ingestion, normalization, matching, and coverage reporting. It writes ONLY to Phase 11 experimental tables (e.g., `fact_odds_historical_phase11`) and does not affect production odds tables (`fact_prop_odds`). It does not produce leaderboard evaluation metrics (log loss/brier) unless a dedicated evaluation step is added.
+
 ## Architecture
 - **Source:** JSON fixtures or API.
 - **Normalization:** `src/nhl_bets/odds_historical/normalize_phase11.py`
