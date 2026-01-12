@@ -1,0 +1,17 @@
+[
+    {
+        "id": "event_bad_1",
+        "markets": []
+    },
+    {
+        "id": "event_bad_2",
+        "markets": [
+            {
+                "key": "unknown_market",
+                "outcomes": [
+                    {"name": "No Line Guy", "oddsAmerican": 100}
+                ]
+            }
+        ]
+    }
+]
