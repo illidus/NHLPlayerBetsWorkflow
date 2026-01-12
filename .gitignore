@@ -22,6 +22,7 @@ NHLPlayerBetsWorkflow/
 sandbox/audit_results.json
 sandbox/oddsshark_sample.html
 sandbox/unabated_sample.json
+scripts/adhoc/
 
 # Explicitly Tracked Governance Artifacts (Exceptions)
 !outputs/eval/MASTER_BACKTEST_LEADERBOARD.md
