@@ -132,7 +132,13 @@ Execute immediately on every DB connection:
 
 ---
 
-## 12. Experiment Recording Standard
+## 12. Manual Overrides (Lineups/TOI)
+- **Capability:** Manually inject `projected_toi` and `pp_unit` to handle injury returns or line promotions.
+- **File:** `data/overrides/manual_lineup_overrides.csv`
+- **Logic:** Overrides L20/L40 averages. PP Unit 1 ensures ~50% PP share floor.
+- **Documentation:** `docs/plans/IMPLEMENTATION_PLAN_OVERRIDES.md`
+
+## 13. Experiment Recording Standard
 All model logic experiments must be documented in a dedicated markdown file with the following sections:
 1. **Metadata:** Date, Objective, Logic version tags, and **Data Scope** (Seasons used, Date range, Total player-game sample size).
 2. **Logic Definition:** Clear pseudocode or Python snippet of the change (e.g., L20 vs L40 window).
@@ -142,7 +148,7 @@ All model logic experiments must be documented in a dedicated markdown file with
 
 ---
 
-## 13. Audit & Verification Guidelines
+## 14. Audit & Verification Guidelines
 
 ### Audit Interpretation Notes
 - **Duplicate Markets:** Markets may appear twice in audit logs due to explicit **Over/Under evaluation**.
@@ -154,6 +160,23 @@ All model logic experiments must be documented in a dedicated markdown file with
 2. **High EV Validation:** Any ASSISTS/POINTS EV > 10% → Verify sample size and confirm it aligns with a known calibrator bucket.
 3. **Row Duplication:** If duplicate `market_key` rows exist, first check for Over/Under symmetry before investigating join defects.
 
+
+## 15. Run Governance & History
+
+### Canonical References
+- **Authoritative behavior:** [docs/PRODUCTION_TRUTH_TABLE.md](docs/PRODUCTION_TRUTH_TABLE.md)
+- **Rollback authority:** [docs/SYSTEM_HISTORY_AND_ROLLBACK.md](docs/SYSTEM_HISTORY_AND_ROLLBACK.md)
+- **Performance authority:** [outputs/eval/MASTER_BACKTEST_LEADERBOARD.md](outputs/eval/MASTER_BACKTEST_LEADERBOARD.md)
+- **Governance Rules:** [docs/LEADERBOARD_GOVERNANCE.md](docs/LEADERBOARD_GOVERNANCE.md)
+
+**Mandate:** Do not infer behavior from chat history. Profiles are the only supported behavior switches.
+
+### Official Run Requirements
+To register a run on the Master Leaderboard, it must:
+1. Generate a valid `run_manifest_*.json` in `outputs/runs/`.
+2. Use a distinct `fact_probabilities` table name.
+3. Be evaluated using `evaluate_forecast_accuracy.py` against the standard hold-out set.
+4. Show metric convergence (Log Loss) in the manifest.
 
 ## Phase 11 — Historical Odds Ingestion (In Progress)
 **Spec:** docs/phase11_historical_odds/PHASE11_IMPLEMENTATION.md
