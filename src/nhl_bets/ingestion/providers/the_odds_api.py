@@ -393,6 +393,8 @@ class TheOddsApiProvider(BaseOddsProvider):
                             "join_conf_event": 1.0 if event_id and start_ts else 0.0,
                             "join_conf_player": 0.6 if player_name else 0.0,
                             "join_conf_market": 1.0,
-                            "is_dfs": self.mode == "dfs" or self.regions == "us_dfs"
+                            "is_dfs": self.mode == "dfs" or self.regions == "us_dfs",
+                            "home_team_raw": home,
+                            "away_team_raw": away
                         })
         return rows

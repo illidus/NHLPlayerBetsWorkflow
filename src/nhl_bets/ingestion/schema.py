@@ -104,7 +104,51 @@ class OddsSchemaManager:
             raw_payload_path VARCHAR,
             raw_payload_hash VARCHAR,
             failure_reasons JSON, -- List of strings
-            raw_row_json JSON -- Full row dump for debugging
+            raw_row_json JSON, -- Full row dump for debugging
+            is_dfs BOOLEAN DEFAULT FALSE
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS dim_player_alias (
+            alias_id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+            source_vendor VARCHAR,
+            alias_text_raw VARCHAR,
+            alias_text_norm VARCHAR,
+            canonical_player_id VARCHAR,
+            team_abbrev VARCHAR, -- Optional context
+            season VARCHAR, -- Optional context
+            match_method VARCHAR,
+            match_confidence DOUBLE,
+            created_ts_utc TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_ts_utc TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (source_vendor, alias_text_norm, team_abbrev, season)
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS dim_team_roster_snapshot (
+            team_abbrev VARCHAR,
+            snapshot_date DATE,
+            roster_json JSON, -- List of {player_id, full_name, etc.}
+            ingested_at_utc TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (team_abbrev, snapshot_date)
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS stg_player_alias_review_queue (
+            queue_id VARCHAR PRIMARY KEY DEFAULT gen_random_uuid(),
+            source_vendor VARCHAR,
+            alias_text_raw VARCHAR,
+            alias_text_norm VARCHAR,
+            event_id_vendor VARCHAR,
+            game_start_ts_utc TIMESTAMP,
+            home_team_raw VARCHAR,
+            away_team_raw VARCHAR,
+            candidate_players_json JSON, -- List of potential matches
+            decision_status VARCHAR DEFAULT 'PENDING', -- PENDING, RESOLVED, REJECTED
+            created_ts_utc TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            resolved_ts_utc TIMESTAMP,
+            resolved_canonical_player_id VARCHAR,
+            resolution_notes VARCHAR
         );
         """,
         """
@@ -142,7 +186,13 @@ class OddsSchemaManager:
                     "join_conf_event": "DOUBLE",
                     "join_conf_player": "DOUBLE",
                     "join_conf_market": "DOUBLE",
-                    "is_dfs": "BOOLEAN DEFAULT FALSE"
+                    "is_dfs": "BOOLEAN DEFAULT FALSE",
+                    "player_resolve_method": "VARCHAR",
+                    "player_resolve_conf": "DOUBLE",
+                    "player_resolve_notes": "VARCHAR",
+                    "player_id_canonical": "VARCHAR",
+                    "home_team_raw": "VARCHAR",
+                    "away_team_raw": "VARCHAR"
                 },
                 "stg_prop_odds_unresolved": {
                     "is_dfs": "BOOLEAN DEFAULT FALSE"

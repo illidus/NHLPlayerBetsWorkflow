@@ -11,6 +11,7 @@ sys.path.append(os.getcwd())
 
 from src.nhl_bets.ingestion.providers.the_odds_api import TheOddsApiProvider
 from src.nhl_bets.ingestion.schema import OddsSchemaManager
+from src.nhl_bets.identity.player_resolver import PlayerResolver
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Phase 12: Historical Odds Ingestion")
@@ -30,6 +31,8 @@ def parse_args():
     parser.add_argument("--mode", type=str, default="sportsbook", choices=["sportsbook", "dfs"], help="Ingestion mode")
     parser.add_argument("--regions", type=str, default="us", help="Odds API regions (e.g. us, us_dfs, eu)")
     parser.add_argument("--diagnose_vendor", action="store_true", help="Run diagnostic suite and exit")
+    parser.add_argument("--allow_unrostered_resolution", action="store_true", help="Allow fallback to all players (Exploration Only)")
+    parser.add_argument("--prove_identity", action="store_true", help="Calculate and print identity proof metrics")
     
     return parser.parse_args()
 
@@ -74,6 +77,7 @@ def main():
         print(f"Mock Mode: {args.mock}")
         print(f"Event Limit: {effective_limit}")
         print(f"DB Path: {args.db_path}")
+        print(f"Strict Identity: {not args.allow_unrostered_resolution}")
         if not args.yes and not args.mock:
             print("Status: WILL FAIL (requires --yes)")
         else:
@@ -83,6 +87,7 @@ def main():
     print(f"--- Phase 12 Ingestion: {args.provider} ---")
     print(f"Range: {start_dt.date()} to {end_dt.date()}")
     print(f"Mode: {args.mode}, Regions: {args.regions}, Mock: {args.mock}, Dry Run: {args.dry_run}, Limit: {effective_limit}")
+    print(f"Strict Identity: {not args.allow_unrostered_resolution}")
     
     # 1. Setup Schema
     schema_mgr = OddsSchemaManager(args.db_path)
@@ -96,6 +101,104 @@ def main():
     except Exception as e:
         print(f"Ingestion failed: {e}")
         sys.exit(1)
+
+    # --- Phase 13: Player Resolution ---
+    # Metrics containers
+    identity_metrics = {
+        "total_attempted": 0,
+        "resolved_roi": 0,
+        "roster_snapshot_hits": 0,
+        "missing_roster": 0,
+        "ambiguous_collisions": 0
+    }
+
+    if not roi_df.empty:
+        print("Running Phase 13 Player Identity Resolution...")
+        resolver = PlayerResolver(args.db_path, allow_unrostered_resolution=args.allow_unrostered_resolution)
+        
+        # Add resolution columns to dataframe if not present
+        roi_df['player_id_canonical'] = None
+        roi_df['player_resolve_method'] = None
+        roi_df['player_resolve_conf'] = 0.0
+        roi_df['player_resolve_notes'] = None
+        
+        resolved_indices = []
+        resolution_failed_indices = []
+        
+        identity_metrics["total_attempted"] = len(roi_df)
+        
+        # Iterate and Resolve
+        for idx, row in roi_df.iterrows():
+            # If player_name_raw is missing, skip (should be caught by is_roi_grade)
+            if not row.get('player_name_raw'):
+                resolution_failed_indices.append(idx)
+                continue
+
+            pid, method, conf, notes = resolver.resolve(
+                player_name_raw=row['player_name_raw'],
+                event_id_vendor=row.get('event_id_vendor'),
+                game_start_ts=row.get('event_start_ts_utc'),
+                home_team_raw=row.get('home_team_raw', ''),
+                away_team_raw=row.get('away_team_raw', '')
+            )
+            
+            roi_df.at[idx, 'player_id_canonical'] = pid
+            roi_df.at[idx, 'player_resolve_method'] = method
+            roi_df.at[idx, 'player_resolve_conf'] = conf
+            roi_df.at[idx, 'player_resolve_notes'] = notes
+            
+            # Metrics
+            if notes == "MISSING_ROSTER_SNAPSHOT":
+                identity_metrics["missing_roster"] += 1
+            else:
+                identity_metrics["roster_snapshot_hits"] += 1 # Rough proxy: if we didn't fail on snapshot, we hit one (or are in permissive mode)
+            
+            if "Ambiguous" in notes:
+                identity_metrics["ambiguous_collisions"] += 1
+
+            # ROI Grade Gating for Resolution: Conf >= 0.90
+            if conf >= 0.90:
+                resolved_indices.append(idx)
+                identity_metrics["resolved_roi"] += 1
+            else:
+                resolution_failed_indices.append(idx)
+                # Enqueue for manual review
+                resolver.enqueue_unresolved(
+                    row.to_dict(), 
+                    failure_reason=f"Low Conf: {conf:.2f} ({method}) - {notes}"
+                )
+
+        # Split DataFrames
+        failed_res_df = roi_df.loc[resolution_failed_indices].copy()
+        roi_df = roi_df.loc[resolved_indices].copy()
+        
+        # Move failed rows to unresolved_df
+        if not failed_res_df.empty:
+            print(f"  {len(failed_res_df)} rows failed resolution (conf < 0.90). Moved to unresolved.")
+            
+            new_failures = []
+            for _, row in failed_res_df.iterrows():
+                # Map to stg_prop_odds_unresolved schema
+                new_failures.append({
+                    "source_vendor": row.get("source_vendor"),
+                    "capture_ts_utc": row.get("capture_ts_utc"),
+                    "ingested_at_utc": row.get("ingested_at_utc"),
+                    "event_id_vendor": row.get("event_id_vendor"),
+                    "player_name_raw": row.get("player_name_raw"),
+                    "market_type": row.get("market_type"),
+                    "line": row.get("line"),
+                    "side": row.get("side"),
+                    "book_id_vendor": row.get("book_id_vendor"),
+                    "odds_american": row.get("odds_american"),
+                    "raw_payload_path": row.get("raw_payload_path"),
+                    "raw_payload_hash": row.get("raw_payload_hash"),
+                    "failure_reasons": json.dumps([f"PLAYER_RESOLUTION_LOW_CONF: {row.get('player_resolve_conf', 0.0):.2f} - {row.get('player_resolve_method')} - {row.get('player_resolve_notes')}"]),
+                    "raw_row_json": json.dumps(row.to_dict(), default=str),
+                    "is_dfs": row.get("is_dfs", False)
+                })
+            
+            if new_failures:
+                unresolved_df = pd.concat([unresolved_df, pd.DataFrame(new_failures)], ignore_index=True)
 
     # 3. Handle DFS vs Sportsbook data
     dfs_df = pd.DataFrame()
@@ -205,6 +308,79 @@ def main():
 
     with open(main_log_path, "a") as f:
         f.write(log_entry)
+
+    # F) Phase 13 Audits (Mandatory)
+    print("Generating Phase 13 Identity Resolution Audits...")
+    
+    # audit_player_resolution.md
+    with open(report_dir / "audit_player_resolution.md", "w") as f:
+        f.write(f"# Player Identity Resolution Audit\n\n")
+        f.write(f"**Run TS:** {run_ts.isoformat()}\n")
+        f.write(f"**Strict Roster Mode:** {not args.allow_unrostered_resolution}\n\n")
+        
+        f.write("## Summary Metrics\n")
+        f.write(f"- Total Attempted: {identity_metrics['total_attempted']}\n")
+        f.write(f"- Resolved ROI-Grade: {identity_metrics['resolved_roi']} ({(identity_metrics['resolved_roi']/max(1,identity_metrics['total_attempted'])*100):.1f}%)\n")
+        f.write(f"- Roster Snapshot Hits: {identity_metrics['roster_snapshot_hits']}\n")
+        f.write(f"- Missing Roster Failures: {identity_metrics['missing_roster']}\n")
+        f.write(f"- Ambiguous Collisions: {identity_metrics['ambiguous_collisions']}\n\n")
+        
+        f.write("## Confidence Histogram\n")
+        if not roi_df.empty:
+            f.write(roi_df['player_resolve_conf'].value_counts(bins=10, sort=False).to_markdown())
+        elif identity_metrics['total_attempted'] > 0:
+            f.write("All rows failed resolution.\n")
+        else:
+            f.write("No rows processed.\n")
+
+    # audit_unresolved_reasons.md
+    with open(report_dir / "audit_unresolved_reasons.md", "w") as f:
+        f.write(f"# Unresolved Reasons Breakdown\n\n")
+        if not unresolved_df.empty:
+             # Explode reasons if list, or just count
+             # Since we store as JSON list string, we might need to parse, but for now value_counts of the raw string is okay or slight cleanup
+             f.write("## Top Failure Reasons\n")
+             f.write(unresolved_df['failure_reasons'].value_counts().head(20).to_markdown())
+             
+             f.write("\n\n## Top Unresolved Player Names\n")
+             f.write(unresolved_df['player_name_raw'].value_counts().head(20).to_markdown())
+             
+             f.write("\n\n## Failures by Market\n")
+             f.write(unresolved_df['market_type'].value_counts().to_markdown())
+             
+             f.write("\n\n## Failures by Book\n")
+             f.write(unresolved_df['book_id_vendor'].value_counts().to_markdown())
+        else:
+            f.write("No unresolved rows.")
+
+    # G) Proof Identity Mode
+    if args.prove_identity:
+        proof_path = report_dir / "identity_proof.json"
+        
+        # Calculate rates
+        total = identity_metrics['total_attempted']
+        resolved_rate = identity_metrics['resolved_roi'] / max(1, total)
+        roster_hit_rate = identity_metrics['roster_snapshot_hits'] / max(1, total)
+        
+        proof_data = {
+            "run_ts": run_ts.isoformat(),
+            "strict_mode": not args.allow_unrostered_resolution,
+            "total_events_processed": effective_limit, # Proxy
+            "total_rows_attempted": total,
+            "resolved_rate": resolved_rate,
+            "roster_hit_rate": roster_hit_rate,
+            "ambiguous_collisions": identity_metrics['ambiguous_collisions'],
+            "top_unresolved_names": unresolved_df['player_name_raw'].value_counts().head(5).to_dict() if not unresolved_df.empty else {}
+        }
+        
+        with open(proof_path, "w") as f:
+            json.dump(proof_data, f, indent=2)
+            
+        print("\n--- IDENTITY PROOF METRICS ---")
+        print(f"Resolved Rate: {resolved_rate:.2%}")
+        print(f"Roster Hit Rate: {roster_hit_rate:.2%}")
+        print(f"Ambiguous Collisions: {identity_metrics['ambiguous_collisions']}")
+        print(f"Proof written to: {proof_path}")
 
     print(f"Audit reports generated in {report_dir}")
 
