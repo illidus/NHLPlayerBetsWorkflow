@@ -3,8 +3,14 @@ import pandas as pd
 import numpy as np
 import os
 import argparse
+import json
+import sys
 from datetime import datetime
-from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
+from sklearn.metrics import roc_auc_score
+
+# Add src to path
+sys.path.append(os.path.join(os.getcwd()))
+from src.nhl_bets.eval.metrics import compute_log_loss, compute_brier_score
 
 def calculate_ece(y_true, y_prob, n_bins=10):
     """
@@ -79,19 +85,19 @@ def calculate_top_k_hit_rate(df, k_values=[5, 10, 20], p_col='p_over'):
         
     return results, num_slates, avg_candidates
 
-def evaluate_accuracy(db_path, output_md, output_csv, output_bins_csv):
+def evaluate_accuracy(db_path, output_md, output_csv, output_bins_csv, table_name="fact_probabilities"):
     if not os.path.exists(db_path):
         print(f"Error: Database not found at {db_path}")
         return
 
     con = duckdb.connect(db_path)
     
-    print("Joining predictions with realized outcomes and team stats...")
+    print(f"Joining predictions from {table_name} with realized outcomes and team stats...")
     
     # Query to join fact_probabilities with fact_skater_game_all and fact_player_game_features
     # Check if p_over_calibrated exists
     try:
-        con.execute("SELECT p_over_calibrated FROM fact_probabilities LIMIT 1")
+        con.execute(f"SELECT p_over_calibrated FROM {table_name} LIMIT 1")
         has_calibrated = True
     except:
         has_calibrated = False
@@ -117,7 +123,7 @@ def evaluate_accuracy(db_path, output_md, output_csv, output_bins_csv):
             WHEN p.market = 'BLOCKS' THEN (s.blocks >= p.line)
             ELSE NULL
         END::INTEGER as realized
-    FROM fact_probabilities p
+    FROM {table_name} p
     JOIN fact_skater_game_all s ON p.game_id = s.game_id AND p.player_id = s.player_id
     LEFT JOIN fact_player_game_features f ON p.game_id = f.game_id AND p.player_id = f.player_id
     WHERE realized IS NOT NULL
@@ -127,7 +133,7 @@ def evaluate_accuracy(db_path, output_md, output_csv, output_bins_csv):
     con.close()
     
     if df.empty:
-        print("No data found for evaluation. Ensure fact_probabilities and fact_skater_game_all are populated.")
+        print(f"No data found for evaluation in {table_name}. Ensure table and fact_skater_game_all are populated.")
         return
 
     print(f"Evaluating {len(df)} predictions...")
@@ -175,8 +181,8 @@ def evaluate_accuracy(db_path, output_md, output_csv, output_bins_csv):
         baseline_probs = np.full_like(y_true, empirical_rate, dtype=float)
         baseline_probs_clamped = np.clip(baseline_probs, eps, 1 - eps)
         
-        ll = log_loss(y_true, y_prob_clamped, labels=[0, 1])
-        baseline_ll = log_loss(y_true, baseline_probs_clamped, labels=[0, 1])
+        ll = compute_log_loss(y_true, y_prob)
+        baseline_ll = compute_log_loss(y_true, baseline_probs)
         
         metrics = {
             'Market': market,
@@ -185,7 +191,7 @@ def evaluate_accuracy(db_path, output_md, output_csv, output_bins_csv):
             'Count': len(group),
             'Actual Rate': empirical_rate,
             'Avg Model Prob': y_prob.mean(),
-            'Brier Score': brier_score_loss(y_true, y_prob),
+            'Brier Score': compute_brier_score(y_true, y_prob),
             'Log Loss': ll,
             'Baseline Log Loss': baseline_ll,
             'Log Loss Improvement': baseline_ll - ll,
@@ -222,7 +228,7 @@ def evaluate_accuracy(db_path, output_md, output_csv, output_bins_csv):
                 metrics[f'Tail p>={t_str} Actual'] = np.mean(y_true[mask])
                 metrics[f'Tail p>={t_str} Gap'] = metrics[f'Tail p>={t_str} Actual'] - metrics[f'Tail p>={t_str} Avg P']
                 if threshold == 0.30:
-                    metrics['Tail Log Loss (p>=0.30)'] = log_loss(y_true[mask], y_prob_clamped[mask], labels=[0, 1])
+                    metrics['Tail Log Loss (p>=0.30)'] = compute_log_loss(y_true[mask], y_prob[mask])
             else:
                 metrics[f'Tail p>={t_str} Count'] = 0
                 metrics[f'Tail p>={t_str} Avg P'] = np.nan
@@ -520,6 +526,44 @@ def evaluate_accuracy(db_path, output_md, output_csv, output_bins_csv):
         f.write("- **Top-10 Hit Rate**: Percentage of the 10 highest-probability players per slate who actually hit.\n")
         f.write("- **Gap**: Actual Rate - Avg Model Prob. Positive means under-predicting, negative means over-predicting.\n")
 
+    # Save Manifest
+    import subprocess
+    git_sha = "unknown"
+    try:
+        git_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+    except:
+        pass
+
+    # Scoring Alphas
+    alphas = {}
+    alpha_path = os.environ.get('NHL_BETS_SCORING_ALPHA_OVERRIDE_PATH')
+    if alpha_path and os.path.exists(alpha_path):
+        with open(alpha_path, 'r') as f:
+            alphas = json.load(f)
+
+    manifest = {
+        'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S"),
+        'git_sha': git_sha,
+        'table_evaluated': table_name,
+        'data_range': {
+            'start': str(min_date),
+            'end': str(max_date),
+            'seasons': [int(s) for s in seasons]
+        },
+        'resolved_logic': {
+            'scoring_alphas': alphas,
+            'variance_mode': os.environ.get('NHL_BETS_VARIANCE_MODE', 'unknown'),
+            'calibration_mode': os.environ.get('NHL_BETS_CALIBRATION_MODE', 'unknown')
+        },
+        'metrics_summary': report_df.to_dict(orient='records'),
+        'row_count': len(df)
+    }
+    
+    eval_manifest_path = os.path.join(os.path.dirname(output_csv), f"eval_manifest_{table_name}.json")
+    with open(eval_manifest_path, 'w') as f:
+        json.dump(manifest, f, indent=2)
+        
+    print(f"Eval manifest saved to {eval_manifest_path}")
     print(f"Saved accuracy summary to {output_md}")
 
 
@@ -529,10 +573,11 @@ if __name__ == "__main__":
     parser.add_argument("--out-md", default="outputs/backtest_reports/forecast_accuracy.md")
     parser.add_argument("--out-csv", default="outputs/backtest_reports/forecast_accuracy.csv")
     parser.add_argument("--out-bins-csv", default="outputs/backtest_reports/forecast_accuracy_bins.csv")
+    parser.add_argument("--table", default="fact_probabilities", help="DuckDB table to evaluate")
     
     args = parser.parse_args()
     
     # Ensure report directory exists
     os.makedirs(os.path.dirname(args.out_md), exist_ok=True)
     
-    evaluate_accuracy(args.duckdb_path, args.out_md, args.out_csv, args.out_bins_csv)
+    evaluate_accuracy(args.duckdb_path, args.out_md, args.out_csv, args.out_bins_csv, args.table)

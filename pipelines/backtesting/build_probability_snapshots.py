@@ -3,22 +3,27 @@ import pandas as pd
 import sys
 import argparse
 import os
+import numpy as np
+import json
 from datetime import datetime
 
-# Add project root to path for imports
+# Add project root and src to path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(current_dir))
+src_dir = os.path.join(project_root, 'src')
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 try:
     from nhl_bets.projections.single_game_model import compute_game_probs
-    from nhl_bets.projections.config import ALPHAS
+    from nhl_bets.projections.config import ALPHAS, LG_SA60, LG_XGA60, LG_PACE
 except ImportError as e:
     print(f"Error importing nhl_bets package: {e}")
     sys.exit(1)
 
-def build_snapshots(db_path, start_season=None, end_season=None, force=False, model_version="baseline_v1"):
+def build_snapshots(db_path, start_date=None, end_date=None, model_version="full_v1", calibration_mode="segmented", use_interactions=False, variance_mode="off", output_table=None):
     conn = duckdb.connect(db_path)
     
     # Enable performance pragmas
@@ -26,115 +31,41 @@ def build_snapshots(db_path, start_season=None, end_season=None, force=False, mo
     conn.execute("SET threads = 8;")
     conn.execute("SET temp_directory = './duckdb_temp/';")
 
-    # Check existing
-    if not force:
-        tables = conn.sql("SHOW TABLES").fetchall()
-        existing = [t[0] for t in tables]
-        if 'fact_probabilities' in existing and 'fact_model_mu' in existing:
-            print("Tables 'fact_probabilities' and 'fact_model_mu' exist. Use --force to rebuild.")
-            return
-
-    print(f"Building Probability Snapshots (Model: {model_version})...")
+    # Generate Output Table Name
+    if not output_table:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_table = f"fact_probabilities_{model_version}_{timestamp}"
+        
+    print(f"Building Probability Snapshots (Model: {model_version}, Calib: {calibration_mode}, Interactions: {use_interactions}, Variance: {variance_mode})...")
+    print(f"Output Table: {output_table}")
     
-    # 1. Fetch Data
-    # Join Player Features + Team Defense + Goalie Features
-    # Use L10 as default window per instructions
-    
-    season_filter = ""
-    if start_season:
-        season_filter += f" AND p.season >= {start_season}"
-    if end_season:
-        season_filter += f" AND p.season <= {end_season}"
+    date_filter = ""
+    if start_date:
+        date_filter += f" AND p.game_date >= '{start_date}'"
+    if end_date:
+        date_filter += f" AND p.game_date <= '{end_date}'"
 
     query = f"""
-    WITH team_schedule AS (
-        -- 1. Build Schedule & Identify B2B Context
+    WITH primary_goalies AS (
         SELECT 
-            game_id,
-            home_team as team,
+            game_id, 
+            team, 
+            player_id as goalie_id,
+            ROW_NUMBER() OVER (PARTITION BY game_id, team ORDER BY toi_seconds DESC) as rn
+        FROM fact_goalie_game_situation
+        WHERE situation = 'all'
+    ),
+    league_rolling_stats AS (
+        SELECT 
             game_date,
-            season,
-            LAG(game_date) OVER (PARTITION BY home_team ORDER BY game_date) as prev_game_date,
-            LAG(game_id) OVER (PARTITION BY home_team ORDER BY game_date) as prev_game_id
-        FROM dim_games
-        UNION ALL
-        SELECT 
-            game_id,
-            away_team as team,
-            game_date,
-            season,
-            LAG(game_date) OVER (PARTITION BY away_team ORDER BY game_date) as prev_game_date,
-            LAG(game_id) OVER (PARTITION BY away_team ORDER BY game_date) as prev_game_id
-        FROM dim_games
-    ),
-    schedule_context AS (
-        SELECT 
-            *,
-            CASE WHEN date_diff('day', prev_game_date, game_date) = 1 THEN 1 ELSE 0 END as is_b2b
-        FROM team_schedule
-    ),
-    
-    -- 2. Determine Roster Depth (Rank 1 = Starter, Rank 2 = Backup) based on PAST Volume
-    -- We look at the most recent snapshot available for each goalie before the target game
-    recent_roster AS (
-        SELECT 
-            s.game_id,
-            s.team,
-            s.is_b2b,
-            s.prev_game_id,
-            gf.goalie_id,
-            gf.sum_toi_L10,
-            -- Rank by Volume (L10 TOI) to find "Implied Starter" vs "Backup"
-            ROW_NUMBER() OVER (PARTITION BY s.game_id, s.team ORDER BY gf.sum_toi_L10 DESC) as depth_rank
-        FROM schedule_context s
-        JOIN fact_goalie_features gf 
-            ON s.team = gf.team 
-            AND gf.game_date < s.game_date 
-            AND gf.game_date >= (s.game_date - INTERVAL 14 DAY) -- Look back 2 weeks for active roster
-        -- Dedup: keep most recent stats per goalie per target game
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY s.game_id, s.team, gf.goalie_id ORDER BY gf.game_date DESC) = 1
-    ),
-    
-    -- 3. Identify Who Started the Previous Game
-    prev_starter_info AS (
-        SELECT 
-            s.game_id, -- Target Game ID
-            s.team,
-            pg.player_id as prev_starter_id
-        FROM schedule_context s
-        JOIN fact_goalie_game_situation pg 
-            ON s.prev_game_id = pg.game_id 
-            AND s.team = pg.team
-        -- Use Max TOI to identify the starter of the prev game
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY s.game_id, s.team ORDER BY pg.toi_seconds DESC) = 1
-    ),
-    
-    -- 4. Final Selection Heuristic
-    primary_goalies AS (
-        SELECT 
-            r.game_id,
-            r.team,
-            r.goalie_id,
-            1 as rn -- Maintain compatibility with downstream join
-        FROM recent_roster r
-        LEFT JOIN prev_starter_info p ON r.game_id = p.game_id AND r.team = p.team
-        WHERE 
-            CASE 
-                -- If B2B AND The "#1 Guy" started yesterday -> Pick the "#2 Guy"
-                WHEN r.is_b2b = 1 AND r.depth_rank = 1 AND r.goalie_id = p.prev_starter_id THEN 0
-                WHEN r.is_b2b = 1 AND r.depth_rank = 2 AND (p.prev_starter_id IS NULL OR p.prev_starter_id != r.goalie_id) THEN 1
-                
-                -- Standard: Pick #1
-                WHEN r.is_b2b = 0 AND r.depth_rank = 1 THEN 1
-                
-                -- Fallback for weird B2B cases (e.g. #1 didn't play yesterday, or no backup found)
-                -- If we filtered out Rank 1 above, we need to ensure Rank 2 is picked. 
-                -- The logic above is slightly exclusive. Let's simplify with a Priority Sort.
-                ELSE 0 
-            END = 1
-            
-        -- Ensure we pick exactly one per game/team (in case logic matches multiple or none, fallback to Rank 1)
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY r.game_id, r.team ORDER BY r.depth_rank ASC) = 1
+            team,
+            AVG(opp_sa60_L10) OVER (ORDER BY game_date ROWS BETWEEN 900 PRECEDING AND 1 PRECEDING) as lg_mu_sog,
+            STDDEV(opp_sa60_L10) OVER (ORDER BY game_date ROWS BETWEEN 900 PRECEDING AND 1 PRECEDING) as lg_sigma_sog,
+            AVG(opp_xga60_L10) OVER (ORDER BY game_date ROWS BETWEEN 900 PRECEDING AND 1 PRECEDING) as lg_mu_xga,
+            STDDEV(opp_xga60_L10) OVER (ORDER BY game_date ROWS BETWEEN 900 PRECEDING AND 1 PRECEDING) as lg_sigma_xga,
+            {LG_PACE} as lg_mu_pace,
+            3.0 as lg_sigma_pace
+        FROM fact_team_defense_features
     )
     SELECT 
         p.player_id,
@@ -144,10 +75,10 @@ def build_snapshots(db_path, start_season=None, end_season=None, force=False, mo
         dp.player_name as Player,
         p.team as Team,
         p.opp_team as OppTeam,
-        p.home_or_away,
         p.position as Pos,
+        p.shooter_cluster,
         
-        -- Base Stats (L10) -> Map to G, A, PTS, etc.
+        -- Base Stats (L10)
         p.xg_per_game_L10 as G,
         p.goals_per_game_L10 as G_realized,
         p.assists_per_game_L10 as A,
@@ -155,23 +86,9 @@ def build_snapshots(db_path, start_season=None, end_season=None, force=False, mo
         p.sog_per_game_L10 as SOG,
         p.blocks_per_game_L10 as BLK,
         
-        -- Enhanced Process Features (L20)
-        p.ev_ast_60_L20,
-        p.pp_ast_60_L20,
-        p.ev_pts_60_L20,
-        p.pp_pts_60_L20,
-        p.ev_toi_minutes_L20,
-        p.pp_toi_minutes_L20,
-        p.ev_on_ice_xg_60_L20,
-        p.pp_on_ice_xg_60_L20,
-        p.team_pp_xg_60_L20,
-        p.ev_ipp_x_L20,
-        p.pp_ipp_x_L20,
-        p.primary_ast_ratio_L10,
-        
         -- TOI
         p.avg_toi_minutes_L10 as TOI,
-        p.avg_toi_minutes_L10 as proj_toi, -- Use L10 as projection proxy
+        p.avg_toi_minutes_L10 as proj_toi,
         
         -- Context (Opponent)
         d.opp_sa60_L10 as opp_sa60,
@@ -179,35 +96,39 @@ def build_snapshots(db_path, start_season=None, end_season=None, force=False, mo
         
         -- Goalie Features
         COALESCE(gf.goalie_gsax60_L10, 0.0) as goalie_gsax60,
+        gf.goalie_cluster,
         CASE 
             WHEN gf.sum_toi_L10 IS NULL OR gf.sum_toi_L10 = 0 THEN 0.0 
             ELSE gf.sum_xga_L10 / (gf.sum_toi_L10 / 3600)
         END as goalie_xga60,
         
-        -- Placeholders for missing context
-        NULL as implied_team_total,
-        NULL as is_b2b
+        -- B2B
+        CASE WHEN date_diff('day', LAG(p.game_date) OVER (PARTITION BY p.team ORDER BY p.game_date), p.game_date) = 1 THEN 1 ELSE 0 END as is_b2b,
+        
+        -- Derived Deltas
+        ln(COALESCE(d.opp_sa60_L10, {LG_SA60}) / {LG_SA60}) as delta_opp_sog,
+        ln(COALESCE(d.opp_xga60_L10, {LG_XGA60}) / {LG_XGA60}) as delta_opp_xga,
+        COALESCE(gf.goalie_gsax60_L10, 0.0) as delta_goalie,
+        
+        -- Z-Scores
+        (d.opp_sa60_L10 - lrs.lg_mu_sog) / NULLIF(lrs.lg_sigma_sog, 0) as z_opp_sog,
+        (d.opp_xga60_L10 - lrs.lg_mu_xga) / NULLIF(lrs.lg_sigma_xga, 0) as z_opp_xga,
+        (COALESCE(gf.goalie_gsax60_L10, 0.0) - 0.0) / 0.5 as z_goalie_gsax,
+        
+        -- Rolling L20 Features
+        SUM(p.primary_assists) OVER (PARTITION BY p.player_id ORDER BY p.game_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as sum_pa_L20,
+        SUM(p.assists) OVER (PARTITION BY p.player_id ORDER BY p.game_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as sum_a_L20,
+        SUM(p.points) OVER (PARTITION BY p.player_id ORDER BY p.game_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as sum_pts_L20,
+        SUM(p.toi_minutes) OVER (PARTITION BY p.player_id ORDER BY p.game_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as sum_toi_L20,
+        STDDEV(p.sog) OVER (PARTITION BY p.player_id ORDER BY p.game_date ROWS BETWEEN 19 PRECEDING AND CURRENT ROW) as sog_std_L20
         
     FROM fact_player_game_features p
-    LEFT JOIN fact_team_defense_features d 
-        ON p.opp_team = d.team 
-        AND p.game_date = d.game_date
-    LEFT JOIN dim_players dp
-        ON p.player_id = dp.player_id
-        
-    -- Join Primary Goalie (Opponent)
-    LEFT JOIN primary_goalies pg
-        ON p.game_id = pg.game_id
-        AND p.opp_team = pg.team
-        AND pg.rn = 1
-        
-    -- Join Goalie Features
-    LEFT JOIN fact_goalie_features gf
-        ON pg.goalie_id = gf.goalie_id
-        AND p.game_id = gf.game_id
-        
-    WHERE 1=1 {season_filter}
-    -- Ensure we have valid rolling stats
+    LEFT JOIN dim_players dp ON p.player_id = dp.player_id
+    LEFT JOIN fact_team_defense_features d ON p.opp_team = d.team AND p.game_date = d.game_date
+    LEFT JOIN league_rolling_stats lrs ON p.opp_team = lrs.team AND p.game_date = lrs.game_date
+    LEFT JOIN primary_goalies pg ON p.game_id = pg.game_id AND p.opp_team = pg.team AND pg.rn = 1
+    LEFT JOIN fact_goalie_features gf ON pg.goalie_id = gf.goalie_id AND p.game_id = gf.game_id
+    WHERE 1=1 {date_filter}
     AND p.goals_per_game_L10 IS NOT NULL
     """
     
@@ -220,59 +141,53 @@ def build_snapshots(db_path, start_season=None, end_season=None, force=False, mo
         conn.close()
         sys.exit(1)
 
-    # 2. Compute Probabilities
-    print("Computing probabilities...")
-    
-    mu_records = []
+    print(f"Computing probabilities for {model_version}...")
     prob_records = []
     
-    # Using itertuples for speed
-    # row will have attributes matching columns
     for row in df.itertuples(index=False):
-        # Prepare inputs
-        # We can pass the row object itself if we access as dict, but compute_game_probs expects dict access keys
-        # row._asdict() is available in namedtuples from itertuples
-        
         row_dict = row._asdict()
         
-        # Call model
+        # Cluster logic
+        db_cluster = getattr(row, 'shooter_cluster', None)
+        if db_cluster:
+            row_dict['cluster_id'] = db_cluster
+        else:
+            sog_60 = (row.SOG / row.TOI) * 60.0 if row.TOI > 0 else 0
+            if sog_60 >= 10.0: row_dict['cluster_id'] = 'volume_shooter'
+            elif sog_60 >= 6.0: row_dict['cluster_id'] = 'average_shooter'
+            else: row_dict['cluster_id'] = 'low_volume'
+        
+        row_dict['goalie_cluster'] = getattr(row, 'goalie_cluster', 'average_goalie')
+        
+        toi_20 = getattr(row, 'sum_toi_L20', 0.0) or 0.0
+        assist_cluster = 'unclustered'
+        if toi_20 > 60:
+            sum_pa = getattr(row, 'sum_pa_L20', 0.0) or 0.0
+            sum_a = getattr(row, 'sum_a_L20', 0.0) or 0.0
+            sum_pts = getattr(row, 'sum_pts_L20', 0.0) or 0.0
+            pa_rate = (sum_pa / toi_20) * 60.0
+            sa_rate = ((sum_a - sum_pa) / toi_20) * 60.0
+            assist_share = (sum_a / sum_pts) if sum_pts > 0 else 0
+            if pa_rate >= 0.8 and assist_share >= 0.5: assist_cluster = 'creator'
+            elif sa_rate >= 0.7: assist_cluster = 'connector'
+            else: assist_cluster = 'support'
+        row_dict['assist_cluster'] = assist_cluster
+        row_dict['sog_std_L20'] = getattr(row, 'sog_std_L20', 1.5)
+        
+        row_dict['calibration_mode'] = calibration_mode
+        row_dict['use_interactions'] = use_interactions
+        row_dict['variance_mode'] = variance_mode
+        
         try:
             res = compute_game_probs(row_dict, row_dict)
-        except Exception as e:
-            # Handle potential errors (e.g. math domain)
-            print(f"Error processing row: {e}")
-            break # Stop after first error to avoid flood
+        except Exception:
             continue
             
-        # -- Prepare fact_model_mu record --
-        mu_rec = {
-            'player_id': row.player_id,
-            'player_name': row.Player,
-            'game_id': row.game_id,
-            'game_date': row.game_date,
-            'team': row.Team,
-            'opp_team': row.OppTeam,
-            'mu_goals': res['mu_goals'],
-            'mu_assists': res['mu_assists'],
-            'mu_points': res['mu_points'],
-            'mu_sog': res['mu_sog'],
-            'mu_blocks': res['mu_blocks'],
-            'mult_opp_sog': res['mult_opp_sog'],
-            'mult_opp_g': res['mult_opp_g'],
-            'mult_goalie': res['mult_goalie'],
-            'goalie_gsax60': row.goalie_gsax60,
-            'model_version': model_version
-        }
-        mu_records.append(mu_rec)
-        
-        # -- Prepare fact_probabilities records (Long format) --
-        # Markets: GOALS, ASSISTS, POINTS, SOG, BLOCKS
-        
-        # Helper to add lines
-        def add_probs(market, probs_dict, mu_val, dist):
+        def add_probs(market, probs_dict, probs_cal_dict, mu_val, dist):
             for line, p_val in probs_dict.items():
+                p_cal = probs_cal_dict.get(line, p_val)
                 prob_records.append({
-                    'asof_ts': row.game_date, # simplified
+                    'asof_ts': row.game_date,
                     'game_id': row.game_id,
                     'game_date': row.game_date,
                     'season': row.season,
@@ -283,52 +198,64 @@ def build_snapshots(db_path, start_season=None, end_season=None, force=False, mo
                     'market': market,
                     'line': line,
                     'p_over': p_val,
+                    'p_over_calibrated': p_cal,
                     'mu_used': mu_val,
                     'dist_type': dist,
                     'model_version': model_version,
-                    'feature_window': 'L10'
+                    'feature_window': 'L10',
+                    'is_calibrated': 1 if calibration_mode != 'none' else 0,
+                    'matchup_type': res.get('matchup_key', 'none'),
+                    'assist_cluster': assist_cluster
                 })
 
-        add_probs('GOALS', res['probs_goals'], res['mu_goals'], 'poisson')
-        add_probs('ASSISTS', res['probs_assists'], res['mu_assists'], 'poisson')
-        add_probs('POINTS', res['probs_points'], res['mu_points'], 'poisson')
-        add_probs('SOG', res['probs_sog'], res['mu_sog'], 'negbin')
-        add_probs('BLOCKS', res['probs_blocks'], res['mu_blocks'], 'negbin')
+        add_probs('GOALS', res['probs_goals'], {}, res['mu_goals'], 'poisson')
+        add_probs('ASSISTS', res['probs_assists'], res['probs_assists_calibrated'], res['mu_assists'], 'poisson')
+        add_probs('POINTS', res['probs_points'], res['probs_points_calibrated'], res['mu_points'], 'poisson')
+        add_probs('SOG', res['probs_sog'], res['probs_sog_calibrated'], res['mu_sog'], 'negbin')
+        add_probs('BLOCKS', res['probs_blocks'], res['probs_blocks_calibrated'], res['mu_blocks'], 'negbin')
 
-    # 3. Write to DuckDB
-    print("Writing results to DuckDB...")
-    
-    if not mu_records:
+    if not prob_records:
         print("No records generated.")
         conn.close()
         return
 
-    df_mu = pd.DataFrame(mu_records)
     df_probs = pd.DataFrame(prob_records)
-    
-    # Create tables
-    conn.execute("CREATE OR REPLACE TABLE fact_model_mu AS SELECT * FROM df_mu")
-    conn.execute("CREATE OR REPLACE TABLE fact_probabilities AS SELECT * FROM df_probs")
-    
-    print(f"Written {len(df_mu)} rows to fact_model_mu")
-    print(f"Written {len(df_probs)} rows to fact_probabilities")
-    
+    conn.execute(f"CREATE OR REPLACE TABLE {output_table} AS SELECT * FROM df_probs")
+    print(f"Written {len(df_probs)} rows to {output_table}")
     conn.close()
+    
+    manifest = {
+        "timestamp": datetime.now().isoformat(),
+        "output_table": output_table,
+        "model_version": model_version,
+        "calibration_mode": calibration_mode,
+        "use_interactions": use_interactions,
+        "variance_mode": variance_mode,
+        "start_date": start_date,
+        "end_date": end_date,
+        "scoring_alphas": {
+            "GOALS": ALPHAS.get('GOALS'),
+            "ASSISTS": ALPHAS.get('ASSISTS'),
+            "POINTS": ALPHAS.get('POINTS')
+        },
+        "scoring_alpha_override_path": os.environ.get('NHL_BETS_SCORING_ALPHA_OVERRIDE_PATH')
+    }
+    
+    os.makedirs("outputs/runs", exist_ok=True)
+    manifest_path = os.path.join("outputs/runs", f"run_manifest_{output_table}.json")
+    with open(manifest_path, 'w') as f:
+        json.dump(manifest, f, indent=4)
+    print(f"Manifest saved to {manifest_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--start-season", type=int, default=2018)
-    parser.add_argument("--end-season", type=int, default=2025)
+    parser.add_argument("--start_date", type=str, default="2025-10-01")
+    parser.add_argument("--end_date", type=str, default="2025-11-01")
     parser.add_argument("--duckdb-path", default="data/db/nhl_backtest.duckdb")
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--model-version", default="baseline_v1")
-    
+    parser.add_argument("--model-version", default="full_v1")
+    parser.add_argument("--calibration", default="segmented")
+    parser.add_argument("--use_interactions", action="store_true")
+    parser.add_argument("--variance_mode", default="off", choices=['off', 'nb_dynamic', 'all_nb'])
+    parser.add_argument("--output_table", type=str, default=None)
     args = parser.parse_args()
-    
-    build_snapshots(
-        args.duckdb_path,
-        args.start_season,
-        args.end_season,
-        args.force,
-        args.model_version
-    )
+    build_snapshots(args.duckdb_path, args.start_date, args.end_date, args.model_version, args.calibration, args.use_interactions, args.variance_mode, args.output_table)
