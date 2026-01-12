@@ -217,7 +217,7 @@ def main():
         if not r.get('away_team_code') and r.get('away_team_raw'):
             unresolved_teams.append(r['away_team_raw'])
             
-unresolved_counts = Counter(unresolved_teams)
+    unresolved_counts = Counter(unresolved_teams)
     
     # Run Manifest
     manifest = {
