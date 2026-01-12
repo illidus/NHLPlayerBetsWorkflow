@@ -25,6 +25,16 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
     selected_table = None
     cols_map = {} # 'date', 'home', 'away', 'game_id'
     
+    # Get available tables safely
+    try:
+        # Use simple PRAGMA or SHOW tables if preferred, but execute works
+        # Just check candidates directly
+        pass
+    except Exception as e:
+        metrics['status'] = "error"
+        metrics['notes'].append(f"DB Introspection failed: {e}")
+        return metrics
+
     for table in game_table_candidates:
         try:
             # Check existence
@@ -42,13 +52,17 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
             
             if 'game_date' in cols: mapping['date'] = 'game_date'
             elif 'date' in cols: mapping['date'] = 'date'
-            elif 'start_time' in cols: mapping['date'] = 'start_time' # Might need casting
+            elif 'start_time' in cols: mapping['date'] = 'start_time'
             
-            if 'home_team' in cols: mapping['home'] = 'home_team'
-            elif 'home_team_code' in cols: mapping['home'] = 'home_team_code'
+            # Support both raw names and codes if available, prefer codes for matching
+            # The test uses home_team / away_team usually containing codes or names
+            if 'home_team_code' in cols: mapping['home'] = 'home_team_code'
+            elif 'home_team' in cols: mapping['home'] = 'home_team'
+            elif 'home_code' in cols: mapping['home'] = 'home_code'
             
-            if 'away_team' in cols: mapping['away'] = 'away_team'
-            elif 'away_team_code' in cols: mapping['away'] = 'away_team_code'
+            if 'away_team_code' in cols: mapping['away'] = 'away_team_code'
+            elif 'away_team' in cols: mapping['away'] = 'away_team'
+            elif 'away_code' in cols: mapping['away'] = 'away_code'
             
             if len(mapping) >= 4:
                 selected_table = table
@@ -58,22 +72,19 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
             continue
             
     if not selected_table:
+        metrics['status'] = "no_game_table"
         metrics['notes'].append("No suitable game schedule table found in candidates.")
         return metrics
         
     metrics['game_table_selected'] = selected_table
     metrics['columns_used'] = cols_map
     
-    # 2. Build Game Match Keys (Temporary View)
-    # We assume team columns might be names or codes. If codes, great. If names, we might need normalization.
-    # For MVP, assume the game table has codes or normalized names matching our team_codes logic implicitly?
-    # Or just try direct join if they are codes. If names, we'd need the resolver inside DuckDB UDF or join dim_team.
-    # Let's try direct construction first: DATE|AWAY|HOME
+    # 2. Build Game Match Keys
+    # match_key_code format: YYYY-MM-DD|AWAY|HOME
+    # We must ensure the game table columns are cast correctly to string/date
     
-    # Check if we need to cast date
-    date_expr = cols_map['date']
-    # If timestamp, cast to date
-    # DuckDB is flexible, but explicit is safer.
+    # Check if date needs cast to DATE (if it's timestamp/string)
+    # CAST(col AS DATE) works on timestamp and proper YYYY-MM-DD strings.
     
     game_key_expr = f"CAST({cols_map['date']} AS DATE) || '|' || {cols_map['away']} || '|' || {cols_map['home']}"
     
@@ -100,12 +111,13 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
     SELECT 
         status, 
         COUNT(*) as count,
-        ARRAY_AGG(match_key_code) FILTER (match_key_code IS NOT NULL) as keys
+        list(match_key_code) FILTER (match_key_code IS NOT NULL) as keys
     FROM matched
     GROUP BY status
     """
     
     try:
+        # Use .df() to get Pandas DataFrame for easier handling
         df_res = con.execute(query).df()
         
         total = df_res['count'].sum()
@@ -117,22 +129,25 @@ def match_phase11_rows(con, phase11_table="fact_odds_historical_phase11", game_t
         metrics['match_rate'] = matched / total if total > 0 else 0.0
         
         # Unmatched analysis
-        unmatched_rows = df_res[df_res['status'] != 'Matched']
-        for _, row in unmatched_rows.iterrows():
-            status = row['status']
-            count = row['count']
-            metrics['unmatched_reasons'][status] = int(count)
-            
-            # Sample keys
-            keys = row['keys']
-            if keys is not None and len(keys) > 0:
-                # Take top 5
-                # keys is a numpy array or list
-                sample = list(keys)[:5]
-                metrics['unmatched_sample'].extend([f"{status}: {k}" for k in sample])
+        if not df_res.empty:
+            unmatched_rows = df_res[df_res['status'] != 'Matched']
+            for _, row in unmatched_rows.iterrows():
+                status = row['status']
+                count = row['count']
+                metrics['unmatched_reasons'][status] = int(count)
+                
+                # Sample keys
+                # DuckDB 'list()' returns numpy array or list
+                keys = row['keys']
+                if keys is not None:
+                    # Depending on driver version, might be list or ndarray
+                    sample = list(keys)[:5]
+                    metrics['unmatched_sample'].extend([f"{status}: {k}" for k in sample])
                 
     except Exception as e:
         metrics['status'] = "error"
         metrics['notes'].append(f"Matching query failed: {e}")
+        # Debug helper: print query if needed (commented out for prod)
+        # print(f"DEBUG QUERY: {query}")
         
     return metrics
