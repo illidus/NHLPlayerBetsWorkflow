@@ -15,49 +15,61 @@ class TestMoneyPuckDownloader(unittest.TestCase):
     def setUp(self):
         self.data_root = Path("mock_data_root")
         
-    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.requests.head')
-    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.requests.get')
+    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.resolve_url_candidates')
+    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg._attempt_request')
     @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.validate_cache')
-    def test_download_file_403_best_effort_no_cache(self, mock_validate, mock_get, mock_head):
+    def test_download_file_403_best_effort_no_cache(self, mock_validate, mock_request, mock_resolve):
         # Setup
         downloader.REFRESH_MODE = "best_effort"
-        mock_head.return_value.status_code = 403
+        mock_resolve.return_value = [("http://test.com/file.csv", "test")]
+        
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_request.return_value = mock_resp # HEAD returns 403
+        
         mock_validate.return_value = False # No cache
         
         # Action
-        result = downloader.download_file("http://test.com/file.csv", "mock_path.csv")
+        result = downloader.download_file_with_fallback("file.csv", "mock_path.csv")
         
         # Assert
-        self.assertEqual(result, "skipped") # In best_effort, it skips without cache? 
-        # Wait, my logic says:
-        # if validate_cache: return served_from_cache
-        # else: if REFRESH_MODE == required: failed else: skipped
+        self.assertEqual(result, "skipped")
         
-    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.requests.head')
-    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.requests.get')
+    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.resolve_url_candidates')
+    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg._attempt_request')
     @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.validate_cache')
-    def test_download_file_403_required_no_cache(self, mock_validate, mock_get, mock_head):
+    def test_download_file_403_required_no_cache(self, mock_validate, mock_request, mock_resolve):
         # Setup
         downloader.REFRESH_MODE = "required"
-        mock_head.return_value.status_code = 403
+        mock_resolve.return_value = [("http://test.com/file.csv", "test")]
+        
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_request.return_value = mock_resp
+        
         mock_validate.return_value = False
         
         # Action
-        result = downloader.download_file("http://test.com/file.csv", "mock_path.csv")
+        result = downloader.download_file_with_fallback("file.csv", "mock_path.csv")
         
         # Assert
         self.assertEqual(result, "failed")
 
-    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.requests.head')
-    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.requests.get')
+    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.resolve_url_candidates')
+    @patch('pipelines.backtesting.download_moneypuck_team_player_gbg._attempt_request')
     @patch('pipelines.backtesting.download_moneypuck_team_player_gbg.validate_cache')
-    def test_download_file_403_with_cache(self, mock_validate, mock_get, mock_head):
+    def test_download_file_403_with_cache(self, mock_validate, mock_request, mock_resolve):
         # Setup
-        mock_head.return_value.status_code = 403
+        mock_resolve.return_value = [("http://test.com/file.csv", "test")]
+        
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_request.return_value = mock_resp
+        
         mock_validate.return_value = True # Cache exists
         
         # Action
-        result = downloader.download_file("http://test.com/file.csv", "mock_path.csv")
+        result = downloader.download_file_with_fallback("file.csv", "mock_path.csv")
         
         # Assert
         self.assertEqual(result, "served_from_cache")
