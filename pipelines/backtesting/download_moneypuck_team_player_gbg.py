@@ -13,9 +13,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Constants
-BASE_URL = "https://moneypuck.com/playerData"
-SEASON_SUMMARY_BASE = f"{BASE_URL}/seasonSummary"
-LOOKUP_URL = f"{BASE_URL}/playerBios/allPlayersLookup.csv"
+# Updated default base URL to the working one
+DEFAULT_BASE_URL = os.getenv("MONEYPUCK_BASE_URL", "https://moneypuck.com/moneypuck/playerData")
+FALLBACK_BASE_URL = "https://moneypuck.com/playerData"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -47,9 +47,29 @@ def validate_cache(target_path):
     p = Path(target_path)
     return p.exists() and p.stat().st_size > 0
 
-def download_file(url, target_path, force=False):
+def _attempt_request(url, method="HEAD", stream=False, timeout=10):
+    """Helper to perform request and return response or None on network error."""
+    try:
+        if method == "HEAD":
+            return requests.head(url, headers=HEADERS, timeout=timeout)
+        elif method == "GET":
+            return requests.get(url, headers=HEADERS, stream=stream, timeout=timeout)
+    except requests.RequestException as e:
+        logger.warning(f"Network error on {method} {url}: {e}")
+        return None
+    return None
+
+def resolve_url_candidates(rel_path):
+    """Yields (url, description) tuples for candidates."""
+    # Ensure rel_path doesn't start with /
+    clean_rel = rel_path.lstrip('/')
+    yield f"{DEFAULT_BASE_URL}/{clean_rel}", "primary"
+    if DEFAULT_BASE_URL != FALLBACK_BASE_URL:
+        yield f"{FALLBACK_BASE_URL}/{clean_rel}", "fallback"
+
+def download_file_with_fallback(rel_path, target_path, force=False):
     """
-    Download a file from a URL to target_path. 
+    Download a file from a relative path, trying primary then fallback base URLs.
     Returns: "downloaded", "skipped", "failed", "served_from_cache"
     """
     target_file = Path(target_path)
@@ -57,81 +77,75 @@ def download_file(url, target_path, force=False):
     
     # Check cache first if not forcing
     if not force and validate_cache(target_file):
-        # We still want to check for updates unless we are in a strict "offline" mode (not implemented),
-        # but the prompt implies 'prefer_cache' means 'use cache if valid and don't aggressively refresh'?
-        # Actually standard HTTP caching checks ETag/Content-Length.
-        # However, to avoid 403s on HEAD requests, we might want to skip the network entirely 
-        # if the policy implies it. But 'prefer_cache' usually implies 'conditional get'.
-        # Given the 403 issue, let's try HEAD. If 403, we fall back to cache.
-        pass
+        pass # Will verify with HEAD or just skip if we wanted strict cache adherence
 
-    try:
-        # 1. Use HEAD request to check size/existence
-        try:
-            head = requests.head(url, headers=HEADERS, timeout=10)
-        except requests.RequestException as e:
-            logger.warning(f"Network error on HEAD {url}: {e}")
-            head = None
-
-        if head and head.status_code == 403:
-            logger.warning(f"Upstream returned 403 (Forbidden) for {url}")
-            if validate_cache(target_file):
-                logger.info(f"  -> Using cached version for {target_file.name}")
-                return "served_from_cache"
-            else:
-                if REFRESH_MODE == "required":
-                    logger.error(f"  -> Cache missing and refresh required. Fatal.")
-                    return "failed"
-                else:
-                    logger.warning(f"  -> Cache missing but best_effort mode. Skipping.")
-                    return "skipped"
-            
-        if head and head.status_code != 200:
-            # Try GET if HEAD is not supported properly or other error
-            # But if it was 404, we shouldn't retry?
-            # Sticking to original logic's robustness
-            try:
-                resp = requests.get(url, headers=HEADERS, stream=True, timeout=10)
-            except requests.RequestException:
-                resp = None
-
-            if resp and resp.status_code == 403:
-                logger.warning(f"Upstream returned 403 (Forbidden) on GET {url}")
-                if validate_cache(target_file):
-                    return "served_from_cache"
-                return "failed" if REFRESH_MODE == "required" else "skipped"
-
-            if not resp or resp.status_code != 200:
-                code = resp.status_code if resp else "ConnectionError"
-                logger.error(f"File not found or error ({code}): {url}")
-                return "failed"
-        else:
-            # HEAD 200 OK
-            if head:
-                remote_size = int(head.headers.get('Content-Length', 0))
-                if not force and validate_cache(target_file) and target_file.stat().st_size == remote_size:
-                    return "skipped" # Up to date
-            
-            # Perform Download
-            resp = requests.get(url, headers=HEADERS, stream=True, timeout=30)
-
-        if resp.status_code == 403:
-             # Just in case GET fails after HEAD succeeded (unlikely but possible)
-             if validate_cache(target_file): return "served_from_cache"
-             return "failed"
-
-        # 2. Download and save
-        with open(target_file, 'wb') as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
+    last_error = None
+    
+    for url, desc in resolve_url_candidates(rel_path):
+        # 1. Check existence/size with HEAD
+        head = _attempt_request(url, "HEAD")
         
-        return "downloaded"
-    except Exception as e:
-        logger.error(f"Failed to download {url}: {e}")
-        if validate_cache(target_file):
-            logger.info("Falling back to cache on exception.")
-            return "served_from_cache"
-        return "failed"
+        if head and head.status_code == 403:
+            logger.warning(f"Upstream 403 ({desc}): {url}")
+            last_error = "403"
+            continue # Try next candidate
+            
+        if head and head.status_code == 200:
+            remote_size = int(head.headers.get('Content-Length', 0))
+            if not force and validate_cache(target_file) and target_file.stat().st_size == remote_size:
+                return "skipped" # Up to date, no need to download
+            
+            # Found a valid source, try downloading
+            resp = _attempt_request(url, "GET", stream=True, timeout=30)
+            if resp and resp.status_code == 200:
+                try:
+                    with open(target_file, 'wb') as f:
+                        for chunk in resp.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    logger.info(f"Downloaded from {desc}: {url}")
+                    return "downloaded"
+                except Exception as e:
+                    logger.error(f"Write error from {url}: {e}")
+                    return "failed"
+            else:
+                logger.warning(f"GET failed after HEAD 200 ({desc}): {url}")
+                continue
+        
+        # If HEAD failed (404 etc), try GET directly just in case (some servers block HEAD)
+        if not head or head.status_code != 200:
+             resp = _attempt_request(url, "GET", stream=True, timeout=10)
+             if resp and resp.status_code == 403:
+                 logger.warning(f"Upstream 403 on GET ({desc}): {url}")
+                 last_error = "403"
+                 continue
+             
+             if resp and resp.status_code == 200:
+                 # Success
+                 try:
+                    with open(target_file, 'wb') as f:
+                        for chunk in resp.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    logger.info(f"Downloaded from {desc} (direct GET): {url}")
+                    return "downloaded"
+                 except Exception as e:
+                     logger.error(f"Write error from {url}: {e}")
+                     return "failed"
+    
+    # If we get here, all candidates failed
+    if validate_cache(target_file):
+        logger.info(f"All network attempts failed. Using cached version for {target_file.name}")
+        return "served_from_cache"
+
+    if last_error == "403":
+        if REFRESH_MODE == "required":
+            logger.error(f"Fatal: 403 received and no cache for {rel_path}")
+            return "failed"
+        else:
+            logger.warning(f"Skipping {rel_path} (403, best_effort)")
+            return "skipped"
+
+    logger.error(f"Failed to download {rel_path} from any source.")
+    return "failed"
 
 def main():
     parser = argparse.ArgumentParser(description="Download MoneyPuck NHL Season Summary data.")
@@ -150,54 +164,55 @@ def main():
     force = args.force or (CACHE_POLICY == "force_refresh")
     
     logger.info(f"Starting download to {data_root}")
+    logger.info(f"Base URL: {DEFAULT_BASE_URL}")
     logger.info(f"Mode: {REFRESH_MODE}, Policy: {CACHE_POLICY}, Force: {force}")
     
     global_stats = {"downloaded": 0, "skipped": 0, "failed": 0, "served_from_cache": 0}
 
     # 1. Download Lookup
-    status = download_file(LOOKUP_URL, data_root / "allPlayersLookup.csv", force=force)
+    # Lookup is at /playerBios/allPlayersLookup.csv relative to player data root?
+    # Old URL was BASE_URL + /playerBios/allPlayersLookup.csv
+    status = download_file_with_fallback("playerBios/allPlayersLookup.csv", data_root / "allPlayersLookup.csv", force=force)
     global_stats[status] += 1
     logger.info(f"Lookup file: {status}")
     
-    GAME_BY_GAME_BASE = f"{BASE_URL}/teamPlayerGameByGame"
-    
     import re
-    def get_csv_links(index_url):
-        try:
-            response = requests.get(index_url, headers=HEADERS, timeout=30)
-            if response.status_code == 403:
-                logger.warning(f"Upstream 403 on index: {index_url}")
-                return "403"
-            response.raise_for_status()
-            links = re.findall(r'href=["\\]?([^"">]+\.csv)["\\]?', response.text)
-            return list(set(links))
-        except Exception as e:
-            logger.error(f"Error fetching index {index_url}: {e}")
-            return None
+    def get_csv_links_with_fallback(rel_path_to_index):
+        """Returns list of CSV links from index page, trying fallback if needed."""
+        for url, desc in resolve_url_candidates(rel_path_to_index):
+            # Ensure index ends with /
+            if not url.endswith('/'):
+                url += '/'
+                
+            resp = _attempt_request(url, "GET", timeout=30)
+            if resp and resp.status_code == 200:
+                links = re.findall(r'href=["\\]?([^"">]+\.csv)["\\]?', resp.text)
+                return list(set(links)), url # Return the success URL base for constructing children
+            elif resp and resp.status_code == 403:
+                logger.warning(f"Upstream 403 on index ({desc}): {url}")
+            else:
+                logger.warning(f"Failed to fetch index ({desc}): {url}")
+        
+        return "failed", None
 
     groups = ["skaters", "goalies"]
     seasons = range(args.start_season, args.end_season + 1)
     
     for season in seasons:
         for group in groups:
-            rel_path = f"teamPlayerGameByGame/{season}/{args.season_type}/{group}"
-            target_dir = data_root / rel_path
-            index_url = f"{GAME_BY_GAME_BASE}/{season}/{args.season_type}/{group}/"
+            # rel_path is teamPlayerGameByGame/2024/regular/skaters
+            rel_dir = f"teamPlayerGameByGame/{season}/{args.season_type}/{group}"
+            target_dir = data_root / rel_dir
             
             logger.info(f"Syncing {season} {group}...")
-            csv_files = get_csv_links(index_url)
+            csv_files, success_base_url = get_csv_links_with_fallback(rel_dir)
             
             # Handle Index Failures
-            if csv_files == "403":
-                # If we can't get the index, we can't know what new files there are.
-                # However, we might rely on what we already have in the folder?
-                # The user requirement says "warn and continue using cache".
-                # For `teamPlayerGameByGame`, the cache is the directory contents.
-                # We can't discover NEW files, but we should acknowledge the existing ones.
+            if csv_files == "failed":
                 if target_dir.exists():
                      cached_files = [f.name for f in target_dir.glob("*.csv")]
                      count = len(cached_files)
-                     logger.warning(f"  -> Index blocked. Retaining {count} cached files.")
+                     logger.warning(f"  -> Index blocked/failed. Retaining {count} cached files.")
                      global_stats["served_from_cache"] += count
                 else:
                     if REFRESH_MODE == "required":
@@ -209,12 +224,23 @@ def main():
                 continue
 
             if not csv_files:
-                logger.warning(f"  -> No files found or error (non-403) for {index_url}")
+                logger.warning(f"  -> No files found in index.")
                 continue
                 
             stats = {"downloaded": 0, "skipped": 0, "failed": 0, "served_from_cache": 0}
+            
+            # success_base_url is like https://.../skaters/
+            # but we need to pass a relative path to download_file_with_fallback?
+            # Actually, we know the exact URL that worked for the index, 
+            # so the files *should* be relative to that.
+            # But download_file_with_fallback logic tries both bases again.
+            # Ideally we should just use the base that worked?
+            # But maybe the index worked on fallback but files are on primary? Unlikely.
+            # Let's simple pass the relative path of the file.
+            
             for csv_file in csv_files:
-                res = download_file(f"{index_url}{csv_file}", target_dir / csv_file, force=force)
+                file_rel_path = f"{rel_dir}/{csv_file}"
+                res = download_file_with_fallback(file_rel_path, target_dir / csv_file, force=force)
                 stats[res] += 1
                 global_stats[res] += 1
             
